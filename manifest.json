@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Microsoft Planner Automation Interface",
+  "version": "1.0",
+  "description": "Chrome extension to interface with Microsoft Planner for automation",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://planner.cloud.microsoft/*",
+    "https://tasks.office.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://planner.cloud.microsoft/*",
+        "https://tasks.office.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Planner Interface"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}

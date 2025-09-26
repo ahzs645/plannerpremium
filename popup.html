@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planner Interface</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Microsoft Planner Interface</h1>
+            <div class="status-indicator" id="statusIndicator">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Checking...</span>
+            </div>
+        </header>
+
+        <main class="content">
+            <section class="plan-info" id="planInfoSection">
+                <h2>Plan Information</h2>
+                <div class="info-item">
+                    <label>Plan Name:</label>
+                    <span id="planName">-</span>
+                </div>
+                <div class="info-item">
+                    <label>Current View:</label>
+                    <span id="currentView">-</span>
+                </div>
+                <div class="info-item">
+                    <label>Access Level:</label>
+                    <span id="accessLevel">-</span>
+                </div>
+                <div class="info-item">
+                    <label>Total Tasks:</label>
+                    <span id="totalTasks">-</span>
+                </div>
+                <div class="info-item">
+                    <label>Buckets:</label>
+                    <span id="bucketsCount">-</span>
+                </div>
+            </section>
+
+            <section class="tasks-summary" id="tasksSummarySection">
+                <h2>Tasks Summary</h2>
+                <div class="summary-stats">
+                    <div class="stat-item">
+                        <span class="stat-number" id="completedTasks">0</span>
+                        <span class="stat-label">Completed</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-number" id="inProgressTasks">0</span>
+                        <span class="stat-label">In Progress</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-number" id="notStartedTasks">0</span>
+                        <span class="stat-label">Not Started</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="actions" id="actionsSection">
+                <h2>Actions</h2>
+                <div class="action-buttons">
+                    <button id="extractDataBtn" class="btn btn-primary">
+                        <span class="btn-icon">📊</span>
+                        Extract Data
+                    </button>
+                    <button id="exportDataBtn" class="btn btn-secondary">
+                        <span class="btn-icon">💾</span>
+                        Export JSON
+                    </button>
+                    <button id="copyDataBtn" class="btn btn-secondary">
+                        <span class="btn-icon">📋</span>
+                        Copy to Clipboard
+                    </button>
+                </div>
+            </section>
+
+            <section class="task-list" id="taskListSection" style="display: none;">
+                <h2>Recent Tasks</h2>
+                <div id="taskList" class="task-items">
+                    <!-- Tasks will be populated here -->
+                </div>
+                <button id="showAllTasksBtn" class="btn btn-link">Show All Tasks</button>
+            </section>
+
+            <section class="automation" id="automationSection">
+                <h2>Automation</h2>
+                <div class="automation-options">
+                    <div class="option-item">
+                        <input type="checkbox" id="autoExtract" checked>
+                        <label for="autoExtract">Auto-extract on page changes</label>
+                    </div>
+                    <div class="option-item">
+                        <input type="checkbox" id="realTimeUpdates">
+                        <label for="realTimeUpdates">Real-time updates</label>
+                    </div>
+                </div>
+            </section>
+
+            <section class="export-options" id="exportOptionsSection" style="display: none;">
+                <h2>Export Options</h2>
+                <div class="export-formats">
+                    <button class="btn btn-outline" id="exportJson">JSON</button>
+                    <button class="btn btn-outline" id="exportCsv">CSV</button>
+                    <button class="btn btn-outline" id="exportTxt">Text</button>
+                </div>
+            </section>
+
+            <section class="error-section" id="errorSection" style="display: none;">
+                <h2>Error</h2>
+                <div class="error-message" id="errorMessage">
+                    <!-- Error messages will be displayed here -->
+                </div>
+                <button id="retryBtn" class="btn btn-primary">Retry</button>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <div class="footer-info">
+                <small>Last updated: <span id="lastUpdated">Never</span></small>
+            </div>
+        </footer>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

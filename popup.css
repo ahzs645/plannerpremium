@@ -1,0 +1,344 @@
+/* Popup CSS for Microsoft Planner Interface */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f8f9fa;
+    color: #333;
+    width: 380px;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.container {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+/* Header */
+.header {
+    background: linear-gradient(135deg, #6264a7, #464775);
+    color: white;
+    padding: 16px;
+    border-radius: 8px 8px 0 0;
+}
+
+.header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #ffc107;
+    animation: pulse 2s infinite;
+}
+
+.status-dot.connected {
+    background-color: #28a745;
+    animation: none;
+}
+
+.status-dot.error {
+    background-color: #dc3545;
+    animation: none;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+/* Content */
+.content {
+    padding: 16px;
+}
+
+section {
+    margin-bottom: 20px;
+}
+
+section h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #6264a7;
+    margin-bottom: 12px;
+    border-bottom: 1px solid #e9ecef;
+    padding-bottom: 4px;
+}
+
+/* Plan Info */
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid #f1f3f4;
+}
+
+.info-item:last-child {
+    border-bottom: none;
+}
+
+.info-item label {
+    font-weight: 500;
+    color: #666;
+    font-size: 12px;
+}
+
+.info-item span {
+    font-size: 12px;
+    color: #333;
+    font-weight: 500;
+}
+
+/* Summary Stats */
+.summary-stats {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.stat-item {
+    flex: 1;
+    text-align: center;
+    padding: 12px 8px;
+    background: #f8f9fa;
+    border-radius: 6px;
+    border: 1px solid #e9ecef;
+}
+
+.stat-number {
+    display: block;
+    font-size: 18px;
+    font-weight: 700;
+    color: #6264a7;
+    margin-bottom: 4px;
+}
+
+.stat-label {
+    font-size: 10px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Buttons */
+.action-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.btn {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.2s ease;
+}
+
+.btn-primary {
+    background: #6264a7;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #464775;
+}
+
+.btn-secondary {
+    background: #e9ecef;
+    color: #333;
+}
+
+.btn-secondary:hover {
+    background: #dee2e6;
+}
+
+.btn-outline {
+    background: transparent;
+    border: 1px solid #6264a7;
+    color: #6264a7;
+}
+
+.btn-outline:hover {
+    background: #6264a7;
+    color: white;
+}
+
+.btn-link {
+    background: transparent;
+    color: #6264a7;
+    border: none;
+    font-size: 11px;
+    text-decoration: underline;
+    padding: 4px 0;
+}
+
+.btn-link:hover {
+    color: #464775;
+}
+
+.btn-icon {
+    font-size: 14px;
+}
+
+/* Export Options */
+.export-formats {
+    display: flex;
+    gap: 8px;
+}
+
+.export-formats .btn {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 11px;
+}
+
+/* Automation */
+.automation-options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.option-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.option-item input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: #6264a7;
+}
+
+.option-item label {
+    font-size: 12px;
+    color: #333;
+    cursor: pointer;
+}
+
+/* Task List */
+.task-items {
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.task-item {
+    padding: 8px 12px;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    background: #f8f9fa;
+}
+
+.task-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: #333;
+    margin-bottom: 4px;
+}
+
+.task-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: #666;
+}
+
+/* Error Section */
+.error-section {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.error-message {
+    font-size: 12px;
+    color: #721c24;
+    margin-bottom: 8px;
+}
+
+/* Footer */
+.footer {
+    background: #f8f9fa;
+    padding: 12px 16px;
+    border-top: 1px solid #e9ecef;
+    border-radius: 0 0 8px 8px;
+}
+
+.footer-info {
+    text-align: center;
+}
+
+.footer-info small {
+    color: #666;
+    font-size: 10px;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+/* Loading Animation */
+.loading {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #6264a7;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Hidden elements */
+.hidden {
+    display: none !important;
+}
