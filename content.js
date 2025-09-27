@@ -194,6 +194,10 @@ class PlannerDataExtractor {
   }
 
   extractGridViewTasks() {
+    if (this.isBoardView()) {
+      return;
+    }
+
     // Try multiple approaches for different Planner versions
     this.extractFromGridRows();
     this.extractFromTaskList();
@@ -438,37 +442,29 @@ class PlannerDataExtractor {
   }
 
   extractBoardViewTasks() {
-    const taskCards = document.querySelectorAll('[data-testid="task-card"], .task-card, [class*="task"], [class*="card"]');
+    const columns = document.querySelectorAll('li.board-column, [data-is-focusable].board-column');
 
-    taskCards.forEach(card => {
-      const task = {};
+    if (!columns.length) {
+      const fallbackCards = document.querySelectorAll('[data-dnd-role="card"], .task-board-card');
+      fallbackCards.forEach(card => {
+        const task = this.buildBoardTaskFromCard(card);
+        if (task) {
+          this.taskData.push(task);
+        }
+      });
+      return;
+    }
 
-      const nameElement = card.querySelector('h3, h4, .task-title, [class*="title"]');
-      if (nameElement) {
-        task.name = nameElement.textContent.trim();
-      }
+    columns.forEach(column => {
+      const bucketName = this.getBucketNameFromColumn(column);
+      const cards = column.querySelectorAll('[data-dnd-role="card"], .task-board-card');
 
-      if (!task.name || this.shouldSkipTaskName(task.name)) {
-        return;
-      }
-
-      const avatars = card.querySelectorAll('.avatar, [class*="avatar"], [class*="assigned"]');
-      if (avatars.length > 0) {
-        task.assignedTo = Array.from(avatars).map(avatar =>
-          avatar.getAttribute('title') || avatar.getAttribute('alt') || 'Unknown'
-        );
-      }
-
-      const labels = card.querySelectorAll('.label, [class*="label"], [class*="category"]');
-      if (labels.length > 0) {
-        task.labels = Array.from(labels).map(label => label.textContent.trim());
-      }
-
-      if (task.name) {
-        task.id = this.generateTaskId(task.name);
-        task.viewType = 'board';
-        this.taskData.push(task);
-      }
+      cards.forEach(card => {
+        const task = this.buildBoardTaskFromCard(card, bucketName);
+        if (task) {
+          this.taskData.push(task);
+        }
+      });
     });
   }
 
@@ -517,14 +513,24 @@ class PlannerDataExtractor {
 
   extractBucketInfo() {
     const buckets = [];
-    const bucketHeaders = document.querySelectorAll('[class*="bucket"], [class*="column"] h2, [class*="column"] h3');
-
-    bucketHeaders.forEach(header => {
-      const bucketName = header.textContent.trim();
+    const boardColumns = document.querySelectorAll('li.board-column, [data-is-focusable].board-column');
+    boardColumns.forEach(column => {
+      const bucketName = this.getBucketNameFromColumn(column);
       if (bucketName && !buckets.includes(bucketName)) {
         buckets.push(bucketName);
       }
     });
+
+    if (buckets.length === 0) {
+      const bucketHeaders = document.querySelectorAll('[class*="bucket"], [class*="column"] h2, [class*="column"] h3');
+
+      bucketHeaders.forEach(header => {
+        const bucketName = header.textContent.trim();
+        if (bucketName && !buckets.includes(bucketName)) {
+          buckets.push(bucketName);
+        }
+      });
+    }
 
     this.planData.buckets = buckets;
   }
@@ -611,6 +617,7 @@ class PlannerDataExtractor {
 
     const exactMatches = new Set([
       'add new task',
+      'add task',
       'filters',
       'grid',
       'board',
@@ -635,6 +642,7 @@ class PlannerDataExtractor {
 
     const prefixMatches = [
       'basic access',
+      'bucket',
       'show all tasks',
       'connected to planner',
       'plan information',
@@ -748,6 +756,467 @@ class PlannerDataExtractor {
     return null;
   }
 
+  normalizeTaskName(name) {
+    return name ? name.trim().toLowerCase() : '';
+  }
+
+  async createTaskAndOpenDetails(taskName, options = {}) {
+    const { openDetails = true } = options;
+    const createdTask = await this.addTask(taskName, options);
+    if (!openDetails) {
+      return createdTask;
+    }
+    await this.openTaskDetails(taskName);
+    return this.findTaskDataByName(this.normalizeTaskName(taskName)) || createdTask;
+  }
+
+  async addTask(taskName, options = {}) {
+    const normalized = this.normalizeTaskName(taskName);
+    if (!normalized) {
+      throw new Error('Task name is required');
+    }
+
+    const existingRow = this.findTaskRowElementByName(normalized);
+    if (existingRow) {
+      return this.findTaskDataByName(normalized);
+    }
+
+    if (this.isBoardView()) {
+      return this.addTaskInBoard(taskName, normalized, options);
+    }
+
+    return this.addTaskInGrid(taskName, normalized);
+  }
+
+  async addTaskInGrid(taskName, normalizedName) {
+    const addControl = this.findAddTaskControl();
+    if (!addControl) {
+      throw new Error('Add new task control not found');
+    }
+
+    this.simulateClick(addControl);
+
+    const input = await this.waitForElement([
+      'input[aria-label="Add New Row"]',
+      'input[aria-label*="Add new task" i]',
+      'textarea[aria-label*="Add new task" i]'
+    ], { timeout: 5000 });
+
+    if (!input) {
+      throw new Error('Add task input did not appear');
+    }
+
+    input.focus({ preventScroll: true });
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.value = taskName;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    if (typeof input.blur === 'function') {
+      input.blur();
+    }
+
+    this.dispatchKeyboardSequence(input, ['Enter']);
+
+    await this.waitForCondition(() => this.findTaskRowElementByName(normalizedName), { timeout: 6000 }).catch(() => {
+      throw new Error('Task row was not created');
+    });
+
+    this.extractData();
+
+    return this.findTaskDataByName(normalizedName);
+  }
+
+  async addTaskInBoard(taskName, normalizedName, options = {}) {
+    const targetBucket = options.bucketName ? this.normalizeTaskName(options.bucketName) : null;
+
+    let columnForTask = null;
+    if (targetBucket) {
+      const columns = document.querySelectorAll('li.board-column, [data-is-focusable].board-column');
+      columnForTask = Array.from(columns).find(column => {
+        const name = this.normalizeTaskName(this.getBucketNameFromColumn(column));
+        return name && name === targetBucket;
+      }) || null;
+    }
+
+    let addControl = columnForTask
+      ? columnForTask.querySelector('button[aria-label="Add task"], button[aria-label*="Add task" i], button.bottom-add-task-button')
+      : this.findBoardAddTaskButton();
+
+    if (!addControl && !document.querySelector('.add-task-card')) {
+      throw new Error('Add task button not found in board view');
+    }
+
+    if (!document.querySelector('.add-task-card') && addControl) {
+      this.simulateClick(addControl);
+    }
+
+    const addCard = await this.waitForElement('.add-task-card', { timeout: 5000 });
+    if (!addCard) {
+      throw new Error('Add task card did not appear');
+    }
+
+    const nameInput = addCard.querySelector('input[data-cy-new-task-name], input[placeholder*="task" i]');
+    if (!nameInput) {
+      throw new Error('Add task input not found in board view');
+    }
+
+    nameInput.focus({ preventScroll: true });
+    nameInput.value = '';
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+    nameInput.value = taskName;
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+    nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const confirmButton = addCard.querySelector('.add-task-card button.bottom-add-task-button, .add-task-card button[aria-label="Add task"], .add-task-card button.ms-Button--primary');
+    if (confirmButton) {
+      this.simulateClick(confirmButton);
+    } else {
+      this.dispatchKeyboardSequence(nameInput, ['Enter']);
+    }
+
+    await this.waitForCondition(() => !document.querySelector('.add-task-card'), { timeout: 6000 }).catch(() => null);
+
+    const newCard = await this.waitForCondition(() => this.findTaskRowElementByName(normalizedName), { timeout: 6000 }).catch(() => null);
+    if (!newCard) {
+      throw new Error('Task card was not created in board view');
+    }
+
+    this.extractData();
+
+    return this.findTaskDataByName(normalizedName);
+  }
+
+  async openTaskDetails(taskName) {
+    const normalized = this.normalizeTaskName(taskName);
+    const row = await this.waitForCondition(() => this.findTaskRowElementByName(normalized), { timeout: 5000 });
+
+    if (!row) {
+      throw new Error('Task row not found');
+    }
+
+    let detailPanel = null;
+
+    if (this.isBoardView()) {
+      this.simulateHover(row);
+      this.simulateClick(row);
+
+      detailPanel = await this.waitForElement([
+        '[class*="detail"][role]',
+        '[class*="panel"][role]'
+      ], { timeout: 5000 }).catch(() => null);
+
+      if (!detailPanel) {
+        const boardDetailsButton = row.querySelector('[aria-label*="Open details" i], [title*="Open details" i]');
+        if (boardDetailsButton) {
+          this.simulateClick(boardDetailsButton);
+          detailPanel = await this.waitForElement([
+            '[class*="detail"][role]',
+            '[class*="panel"][role]'
+          ], { timeout: 5000 }).catch(() => null);
+        }
+      }
+    } else {
+      this.simulateHover(row);
+
+      const detailsButton = await this.waitForCondition(() =>
+        row.querySelector('[aria-label*="Open details" i], [title*="Open details" i]')
+      , { timeout: 2000 }).catch(() => null);
+
+      if (detailsButton) {
+        this.simulateClick(detailsButton);
+      } else {
+        this.simulateClick(row);
+      }
+
+      detailPanel = await this.waitForElement([
+        '[class*="detail"][role]',
+        '[class*="panel"][role]'
+      ], { timeout: 5000 }).catch(() => null);
+    }
+
+    if (!detailPanel) {
+      throw new Error('Task detail panel did not open');
+    }
+
+    this.extractTaskDetails();
+    this.mergeTaskDetail(normalized);
+    this.sendDataToBackground();
+
+    return this.findTaskDataByName(normalized);
+  }
+
+  findAddTaskControl() {
+    const selectors = [
+      '#data-cy-new-row',
+      '[data-cy="new-row"]',
+      '[id^="data-cy-new-row"]',
+      '.new-row-placeholder',
+      '[aria-label="Add new task"]',
+      '[aria-label*="Add new task" i]'
+    ];
+
+    for (const selector of selectors) {
+      const element = document.querySelector(selector);
+      if (element) {
+        return element;
+      }
+    }
+
+    return null;
+  }
+
+  findBoardAddTaskButton() {
+    const buttons = document.querySelectorAll('button[aria-label="Add task"], button[aria-label*="Add task" i], button.bottom-add-task-button');
+    for (const button of buttons) {
+      if (!button.closest('.add-task-card')) {
+        return button;
+      }
+    }
+    return null;
+  }
+
+  isBoardView() {
+    if (this.planData?.currentView && this.planData.currentView.toLowerCase().includes('board')) {
+      return true;
+    }
+    return Boolean(document.querySelector('[data-dnd-role="card"], .task-board-card'));
+  }
+
+  getBucketNameFromColumn(column) {
+    if (!column) return null;
+
+    const ariaLabel = column.getAttribute('aria-label');
+    if (ariaLabel) {
+      const match = ariaLabel.match(/Bucket:\s*([^,.]+)/i);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+
+    const header = column.querySelector('[role="heading"], h2, h3, .column-header, .bucket-header, .bucketHeader');
+    if (header) {
+      const text = header.textContent?.trim();
+      if (text) {
+        return text;
+      }
+    }
+
+    return null;
+  }
+
+  getTaskNameFromAriaLabel(label) {
+    if (!label) return null;
+    const match = label.match(/Task(?: Name)?\s*([^.,]+)/i);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+    return null;
+  }
+
+  buildBoardTaskFromCard(card, bucketName) {
+    if (!card || card.closest('.add-task-card')) {
+      return null;
+    }
+
+    const titleElement = card.querySelector('[aria-label*="Task Name"], [aria-label*="Task" i], [data-task-title], .title, .task-title, .task-name, h3, h4, [role="textbox"]');
+    let name = titleElement?.textContent?.trim();
+
+    if (!name) {
+      const ariaLabel = card.getAttribute('aria-label') || titleElement?.getAttribute?.('aria-label');
+      name = this.getTaskNameFromAriaLabel(ariaLabel);
+    }
+
+    if (!name || this.shouldSkipTaskName(name)) {
+      return null;
+    }
+
+    const task = {
+      name,
+      id: this.generateTaskId(name),
+      viewType: 'board'
+    };
+
+    if (bucketName) {
+      task.bucket = bucketName;
+    }
+
+    const avatars = card.querySelectorAll('.avatar, [class*="avatar"], [class*="assigned"], .ms-Facepile-itemButton');
+    if (avatars.length > 0) {
+      const assignees = Array.from(avatars)
+        .map(avatar => avatar.getAttribute('title') || avatar.getAttribute('alt') || avatar.textContent?.trim())
+        .filter(Boolean);
+      if (assignees.length > 0) {
+        task.assignedTo = assignees;
+      }
+    }
+
+    const labels = card.querySelectorAll('.label, [class*="label"], [class*="category"]');
+    if (labels.length > 0) {
+      const labelValues = Array.from(labels).map(label => label.textContent.trim()).filter(Boolean);
+      if (labelValues.length > 0) {
+        task.labels = labelValues;
+      }
+    }
+
+    return task;
+  }
+
+  findTaskRowElementByName(normalizedName) {
+    if (!normalizedName) return null;
+
+    const gridCandidates = document.querySelectorAll('[aria-label*="Task Name"], [role="gridcell"]');
+    for (const candidate of gridCandidates) {
+      const label = candidate.getAttribute('aria-label');
+      const text = candidate.textContent?.trim();
+      if (label && this.normalizeTaskName(label).includes(`task name ${normalizedName}`)) {
+        return candidate.closest('[role="row"]') || candidate;
+      }
+
+      if (text && this.normalizeTaskName(text) === normalizedName) {
+        return candidate.closest('[role="row"]') || candidate;
+      }
+    }
+
+    const boardCards = document.querySelectorAll('[data-dnd-role="card"], .task-board-card');
+    for (const card of boardCards) {
+      if (card.closest('.add-task-card')) {
+        continue;
+      }
+      const titleElement = card.querySelector('[data-task-title], .title, .task-name, [class*="title"], [role="textbox"]');
+      const text = titleElement?.textContent?.trim();
+      if (text && this.normalizeTaskName(text) === normalizedName) {
+        return card;
+      }
+
+      const ariaLabel = card.getAttribute('aria-label') || titleElement?.getAttribute?.('aria-label');
+      const labelName = this.getTaskNameFromAriaLabel(ariaLabel);
+      if (labelName && this.normalizeTaskName(labelName) === normalizedName) {
+        return card;
+      }
+    }
+
+    return null;
+  }
+
+  findTaskDataByName(normalizedName) {
+    if (!normalizedName) return null;
+    return this.taskData.find(task => this.normalizeTaskName(task.name) === normalizedName) || null;
+  }
+
+  mergeTaskDetail(normalizedName) {
+    if (!normalizedName) return;
+    const detailIndex = this.taskData.findIndex(task =>
+      task?.viewType === 'detail' && this.normalizeTaskName(task.name) === normalizedName
+    );
+
+    if (detailIndex === -1) {
+      return;
+    }
+
+    const detail = this.taskData[detailIndex];
+    const base = this.taskData.find((task, index) =>
+      index !== detailIndex && this.normalizeTaskName(task.name) === normalizedName
+    );
+
+    if (base) {
+      Object.assign(base, detail);
+      this.taskData.splice(detailIndex, 1);
+    }
+  }
+
+  simulateClick(element) {
+    if (!element) return;
+
+    const fire = (Ctor, type, init = {}) => {
+      try {
+        const event = new Ctor(type, { bubbles: true, cancelable: true, ...init });
+        element.dispatchEvent(event);
+      } catch (error) {
+        const fallback = new Event(type, { bubbles: true, cancelable: true });
+        element.dispatchEvent(fallback);
+      }
+    };
+
+    if (typeof window.PointerEvent === 'function') {
+      fire(window.PointerEvent, 'pointerdown');
+    }
+    fire(MouseEvent, 'mousedown');
+
+    if (typeof element.focus === 'function') {
+      element.focus({ preventScroll: true });
+    }
+
+    if (typeof window.PointerEvent === 'function') {
+      fire(window.PointerEvent, 'pointerup');
+    }
+    fire(MouseEvent, 'mouseup');
+    fire(MouseEvent, 'click');
+  }
+
+  simulateHover(element) {
+    if (!element) return;
+    const mouseEnter = new MouseEvent('mouseenter', { bubbles: false, cancelable: true });
+    element.dispatchEvent(mouseEnter);
+    const mouseOver = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
+    element.dispatchEvent(mouseOver);
+  }
+
+  dispatchKeyboardSequence(target, keys) {
+    if (!target || !keys) return;
+
+    keys.forEach(key => {
+      const options = {
+        key,
+        code: key,
+        keyCode: key === 'Enter' ? 13 : undefined,
+        which: key === 'Enter' ? 13 : undefined,
+        bubbles: true,
+        cancelable: true
+      };
+
+      target.dispatchEvent(new KeyboardEvent('keydown', options));
+      target.dispatchEvent(new KeyboardEvent('keypress', options));
+      target.dispatchEvent(new KeyboardEvent('keyup', options));
+    });
+  }
+
+  waitForElement(selectors, options = {}) {
+    const selectorList = Array.isArray(selectors) ? selectors.join(',') : selectors;
+    return this.waitForCondition(() => document.querySelector(selectorList), options);
+  }
+
+  waitForCondition(predicate, { timeout = 5000, interval = 100 } = {}) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      let hasLoggedError = false;
+
+      const check = () => {
+        try {
+          const result = predicate();
+          if (result) {
+            clearInterval(timer);
+            resolve(result);
+            return;
+          }
+        } catch (error) {
+          if (!hasLoggedError) {
+            console.warn('Condition check failed:', error);
+            hasLoggedError = true;
+          }
+        }
+
+        if (Date.now() - start >= timeout) {
+          clearInterval(timer);
+          reject(new Error('Timed out waiting for condition'));
+        }
+      };
+
+      const timer = setInterval(check, interval);
+      check();
+    });
+  }
+
   setupMutationObserver() {
     const observer = new MutationObserver((mutations) => {
       let shouldUpdate = false;
@@ -835,10 +1304,72 @@ if (!window.plannerExtractorInitialized) {
 
   // Make extractor available globally for debugging
   window.plannerExtractor = plannerExtractor;
+  window.plannerAutomation = {
+    addTask: (name, options) => plannerExtractor.addTask(name, options),
+    openTaskDetails: (name) => plannerExtractor.openTaskDetails(name),
+    createTaskAndOpenDetails: (name, options) => plannerExtractor.createTaskAndOpenDetails(name, options)
+  };
 }
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'createPlannerTask') {
+    const { taskName } = request;
+    if (!taskName || !taskName.trim()) {
+      sendResponse({ success: false, error: 'Task name is required' });
+      return true;
+    }
+
+    plannerExtractor.addTask(taskName.trim())
+      .then(task => {
+        sendResponse({ success: true, task, data: plannerExtractor.getCurrentData() });
+      })
+      .catch(error => {
+        console.error('Failed to add task:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+
+    return true;
+  }
+
+  if (request.action === 'openPlannerTaskDetails') {
+    const { taskName } = request;
+    if (!taskName || !taskName.trim()) {
+      sendResponse({ success: false, error: 'Task name is required' });
+      return true;
+    }
+
+    plannerExtractor.openTaskDetails(taskName.trim())
+      .then(task => {
+        sendResponse({ success: true, task, data: plannerExtractor.getCurrentData() });
+      })
+      .catch(error => {
+        console.error('Failed to open task details:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+
+    return true;
+  }
+
+  if (request.action === 'createTaskAndOpenDetails') {
+    const { taskName, options } = request;
+    if (!taskName || !taskName.trim()) {
+      sendResponse({ success: false, error: 'Task name is required' });
+      return true;
+    }
+
+    plannerExtractor.createTaskAndOpenDetails(taskName.trim(), options)
+      .then(task => {
+        sendResponse({ success: true, task, data: plannerExtractor.getCurrentData() });
+      })
+      .catch(error => {
+        console.error('Failed to create task and open details:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+
+    return true;
+  }
+
   if (request.action === 'extractPlannerData') {
     const data = plannerExtractor.manualExtract();
     sendResponse({ success: true, data });

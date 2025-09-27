@@ -49,6 +49,10 @@ class PlannerPopup {
       this.showAllTasks();
     });
 
+    document.getElementById('triggerAddTaskBtn').addEventListener('click', () => {
+      this.triggerAddTaskWorkflow();
+    });
+
     // Retry button
     document.getElementById('retryBtn').addEventListener('click', () => {
       this.init();
@@ -232,13 +236,25 @@ class PlannerPopup {
       const cleanedName = this.cleanTaskName(task.name);
       const taskName = cleanedName || 'Untitled Task';
 
+      taskElement.title = 'Click to open this task in Planner';
+
+      const assigneeValue = Array.isArray(task.assignedTo)
+        ? (task.assignedTo[0] || 'Unassigned')
+        : (task.assignedTo || 'Unassigned');
+      const bucketInfo = task.bucket ? `<span>Bucket: ${task.bucket}</span>` : '';
+
       taskElement.innerHTML = `
         <div class="task-name">${taskName}</div>
         <div class="task-meta">
-          <span>${task.assignedTo || 'Unassigned'}</span>
+          <span>${assigneeValue}</span>
+          ${bucketInfo}
           <span>${task.progress || 0}% complete</span>
         </div>
       `;
+
+      taskElement.addEventListener('click', () => {
+        this.openTaskDetailsFromPopup(taskName);
+      });
 
       taskList.appendChild(taskElement);
     });
@@ -439,6 +455,94 @@ class PlannerPopup {
     exportSection.style.display = exportSection.style.display === 'none' ? 'block' : 'none';
   }
 
+  async triggerAddTaskWorkflow() {
+    if (!this.isConnected) {
+      this.showError('Not connected to Planner page');
+      return;
+    }
+
+    const suggestedName = `New Task ${new Date().toLocaleTimeString()}`;
+    const taskName = prompt('Enter a task name to create in Planner', suggestedName);
+
+    if (!taskName || !taskName.trim()) {
+      return;
+    }
+
+    let bucketName = null;
+    const buckets = this.currentData?.planData?.buckets;
+    if (Array.isArray(buckets) && buckets.length > 0) {
+      const defaultBucket = buckets[0];
+      const bucketPrompt = prompt(
+        `Add task to which bucket? (Available: ${buckets.join(', ')})`,
+        defaultBucket
+      );
+      if (bucketPrompt && bucketPrompt.trim()) {
+        bucketName = bucketPrompt.trim();
+      }
+    }
+
+    try {
+      this.hideError();
+      this.setButtonLoading('triggerAddTaskBtn', true);
+
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) {
+        throw new Error('No active Planner tab found');
+      }
+
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        action: 'createTaskAndOpenDetails',
+        taskName: taskName.trim(),
+        options: bucketName ? { bucketName } : undefined
+      });
+
+      if (!response?.success) {
+        throw new Error(response?.error || 'Add task workflow failed');
+      }
+
+      this.currentData = this.sanitizeData(response.data);
+      this.updateUI();
+      this.showSuccess(`Created "${taskName.trim()}" and opened details`);
+    } catch (error) {
+      console.error('Error running add task workflow:', error);
+      this.showError(error.message || 'Failed to run add task workflow');
+    } finally {
+      this.setButtonLoading('triggerAddTaskBtn', false);
+    }
+  }
+
+  async openTaskDetailsFromPopup(taskName) {
+    if (!taskName || !taskName.trim()) return;
+    if (!this.isConnected) {
+      this.showError('Not connected to Planner page');
+      return;
+    }
+
+    try {
+      this.hideError();
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) {
+        throw new Error('No active Planner tab found');
+      }
+
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        action: 'openPlannerTaskDetails',
+        taskName: taskName.trim()
+      });
+
+      if (!response?.success) {
+        throw new Error(response?.error || 'Unable to open task details');
+      }
+
+      this.currentData = this.sanitizeData(response.data);
+      this.updateUI();
+      this.showSuccess(`Opened details for "${taskName.trim()}"`);
+    } catch (error) {
+      console.error('Error opening task details:', error);
+      this.showError(error.message || 'Failed to open task details');
+    }
+  }
+
   async copyToClipboard() {
     if (!this.currentData) {
       this.showError('No data to copy');
@@ -559,10 +663,16 @@ class PlannerPopup {
     const button = document.getElementById(buttonId);
     if (loading) {
       button.disabled = true;
+      if (!button.dataset.originalContent) {
+        button.dataset.originalContent = button.innerHTML;
+      }
       button.innerHTML = '<span class="loading"></span> Loading...';
     } else {
       button.disabled = false;
-      button.innerHTML = button.dataset.originalText || button.innerHTML;
+      if (button.dataset.originalContent) {
+        button.innerHTML = button.dataset.originalContent;
+        delete button.dataset.originalContent;
+      }
     }
   }
 
