@@ -332,8 +332,13 @@ class PlannerBackgroundService {
       message: this.generateChangeMessage(changes)
     };
 
+    const notificationsApi = chrome.notifications;
+    if (!notificationsApi || typeof notificationsApi.create !== 'function') {
+      return;
+    }
+
     try {
-      await chrome.notifications.create(
+      await notificationsApi.create(
         `planner_change_${planId}_${Date.now()}`,
         notificationOptions
       );
@@ -392,15 +397,18 @@ class PlannerBackgroundService {
       });
 
       // Create welcome notification
-      try {
-        await chrome.notifications.create('planner_welcome', {
-          type: 'basic',
-          iconUrl: 'icon48.png',
-          title: 'Planner Interface Installed',
-          message: 'Visit a Microsoft Planner page to start extracting data!'
-        });
-      } catch (error) {
-        console.error('Error showing welcome notification:', error);
+      const notificationsApi = chrome.notifications;
+      if (notificationsApi && typeof notificationsApi.create === 'function') {
+        try {
+          await notificationsApi.create('planner_welcome', {
+            type: 'basic',
+            iconUrl: 'icon48.png',
+            title: 'Planner Interface Installed',
+            message: 'Visit a Microsoft Planner page to start extracting data!'
+          });
+        } catch (error) {
+          console.error('Error showing welcome notification:', error);
+        }
       }
     }
   }

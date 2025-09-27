@@ -99,19 +99,16 @@ class PlannerDataExtractor {
   }
 
   extractCurrentView() {
-    // Extract current view from UI elements
-    const viewSelectors = [
-      '.selected [aria-label*="Grid"]',
-      '.active [aria-label*="Grid"]',
-      'button[aria-pressed="true"]',
-      '.view-selector .selected'
-    ];
+    delete this.planData.currentView;
 
-    for (const selector of viewSelectors) {
-      const element = document.querySelector(selector);
-      if (element) {
-        this.planData.currentView = element.textContent.trim() || 'Grid';
-        break;
+    const activeToggle = document.querySelector(
+      '[aria-pressed="true"][aria-label], [role="tab"][aria-selected="true"]'
+    );
+
+    if (activeToggle) {
+      const label = activeToggle.getAttribute('aria-label') || activeToggle.textContent;
+      if (label) {
+        this.planData.currentView = label.trim();
       }
     }
 
@@ -124,14 +121,38 @@ class PlannerDataExtractor {
       }
     }
 
-    // Look for Grid/Board indicators
-    if (document.querySelector('[aria-label*="Grid"]')) {
-      this.planData.currentView = 'Grid';
-    } else if (document.querySelector('[aria-label*="Board"]') || document.querySelector('.board-column')) {
-      this.planData.currentView = 'Board';
+    if (!this.planData.currentView) {
+      const boardIndicators = [
+        document.querySelector('li.board-column, [data-is-focusable].board-column'),
+        document.querySelector('[data-dnd-role="card"], .task-board-card')
+      ];
+
+      if (boardIndicators.some(Boolean)) {
+        this.planData.currentView = 'Board';
+      }
     }
 
-    // Default fallback
+    if (!this.planData.currentView) {
+      const gridIndicators = [
+        document.querySelector('[role="grid"], .task-grid-view'),
+        document.querySelector('[data-automation-id*="grid"]'),
+        document.querySelector('[role="rowgroup"]')
+      ];
+
+      if (gridIndicators.some(Boolean)) {
+        this.planData.currentView = 'Grid';
+      }
+    }
+
+    if (this.planData.currentView) {
+      const normalized = this.planData.currentView.toLowerCase();
+      if (normalized.includes('board')) {
+        this.planData.currentView = 'Board';
+      } else if (normalized.includes('grid')) {
+        this.planData.currentView = 'Grid';
+      }
+    }
+
     if (!this.planData.currentView) {
       this.planData.currentView = 'Grid';
     }
@@ -230,8 +251,8 @@ class PlannerDataExtractor {
         if (ariaLabel.includes('Task Name')) {
           const taskNameElement = cell.querySelector('span, div, button');
           if (taskNameElement) {
-            const candidateName = taskNameElement.textContent.trim();
-            if (!this.shouldSkipTaskName(candidateName)) {
+            const candidateName = this.cleanTaskTitle(taskNameElement.textContent);
+            if (candidateName && !this.shouldSkipTaskName(candidateName)) {
               task.name = candidateName;
             }
           }
@@ -305,8 +326,8 @@ class PlannerDataExtractor {
         // Extract task name from aria-label values like "Task Name <task>. Use the space..."
         const taskNameMatch = ariaLabel.match(/Task Name\s+([^.]+)/);
         if (taskNameMatch) {
-          task.name = taskNameMatch[1].trim();
-          if (this.shouldSkipTaskName(task.name)) {
+          task.name = this.cleanTaskTitle(taskNameMatch[1]);
+          if (!task.name || this.shouldSkipTaskName(task.name)) {
             task.name = null;
             return;
           }
@@ -371,8 +392,8 @@ class PlannerDataExtractor {
           const ariaLabel = nameElement.getAttribute('aria-label');
           const taskNameMatch = ariaLabel.match(/Task Name\s+([^.]+)/);
           if (taskNameMatch) {
-            task.name = taskNameMatch[1].trim();
-            if (this.shouldSkipTaskName(task.name)) {
+            task.name = this.cleanTaskTitle(taskNameMatch[1]);
+            if (!task.name || this.shouldSkipTaskName(task.name)) {
               return;
             }
             task.id = this.generateTaskId(task.name);
@@ -398,7 +419,7 @@ class PlannerDataExtractor {
 
       const task = {};
       const firstCell = cells[0];
-      const taskName = firstCell.textContent.trim();
+      const taskName = this.cleanTaskTitle(firstCell.textContent);
 
       if (!taskName || taskName === 'Task Name' || taskName.length <= 1) return;
       if (this.shouldSkipTaskName(taskName)) return;
@@ -485,7 +506,7 @@ class PlannerDataExtractor {
 
     const titleElement = detailPanel.querySelector('h1, h2, .title, [class*="title"]');
     if (titleElement) {
-      taskDetail.name = titleElement.textContent.trim();
+      taskDetail.name = this.cleanTaskTitle(titleElement.textContent);
       if (this.shouldSkipTaskName(taskDetail.name)) {
         taskDetail.name = null;
         return;
@@ -525,8 +546,10 @@ class PlannerDataExtractor {
     const boardColumns = document.querySelectorAll('li.board-column, [data-is-focusable].board-column');
     boardColumns.forEach(column => {
       const bucketName = this.getBucketNameFromColumn(column);
-      if (bucketName && !buckets.includes(bucketName)) {
-        buckets.push(bucketName);
+      const cleanedName = this.cleanTaskTitle(bucketName);
+      const lowered = cleanedName?.toLowerCase();
+      if (cleanedName && lowered !== 'add bucket' && lowered !== 'add new bucket' && !buckets.includes(cleanedName)) {
+        buckets.push(cleanedName);
       }
     });
 
@@ -534,8 +557,9 @@ class PlannerDataExtractor {
       const bucketHeaders = document.querySelectorAll('[class*="bucket"], [class*="column"] h2, [class*="column"] h3');
 
       bucketHeaders.forEach(header => {
-        const bucketName = header.textContent.trim();
-        if (bucketName && !buckets.includes(bucketName)) {
+        const bucketName = this.cleanTaskTitle(header.textContent);
+        const lowered = bucketName?.toLowerCase();
+        if (bucketName && lowered !== 'add bucket' && lowered !== 'add new bucket' && !buckets.includes(bucketName)) {
           buckets.push(bucketName);
         }
       });
@@ -626,6 +650,8 @@ class PlannerDataExtractor {
 
     const exactMatches = new Set([
       'add new task',
+      'add bucket',
+      'add new bucket',
       'add task',
       'filters',
       'grid',
@@ -695,6 +721,10 @@ class PlannerDataExtractor {
     }
 
     if (/unassigned/i.test(normalized)) {
+      return 'Unassigned';
+    }
+
+    if (/assign this task/i.test(normalized)) {
       return 'Unassigned';
     }
 
@@ -800,36 +830,48 @@ class PlannerDataExtractor {
   async addTaskInGrid(taskName, normalizedName) {
     const addControl = this.findAddTaskControl();
     if (!addControl) {
-      throw new Error('Add new task control not found');
+      const inlineInput = document.querySelector('input[aria-label="Add New Row"], textarea[aria-label="Add new task" i]');
+      if (!inlineInput) {
+        throw new Error('Add new task control not found');
+      }
+      inlineInput.focus({ preventScroll: true });
+      inlineInput.value = '';
+      inlineInput.dispatchEvent(new Event('input', { bubbles: true }));
+      inlineInput.value = taskName;
+      inlineInput.dispatchEvent(new Event('input', { bubbles: true }));
+      inlineInput.dispatchEvent(new Event('change', { bubbles: true }));
+      this.dispatchKeyboardSequence(inlineInput, ['Enter']);
+    } else {
+      this.simulateClick(addControl);
+
+      const input = await this.waitForElement([
+        'input[aria-label="Add New Row"]',
+        'input[aria-label*="Add new task" i]',
+        'textarea[aria-label*="Add new task" i]'
+      ], { timeout: 6000 }).catch(() => null);
+
+      if (!input) {
+        throw new Error('Add task input did not appear');
+      }
+
+      input.focus({ preventScroll: true });
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.value = taskName;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      if (typeof input.blur === 'function') {
+        input.blur();
+      }
+
+      this.dispatchKeyboardSequence(input, ['Enter']);
     }
 
-    this.simulateClick(addControl);
-
-    const input = await this.waitForElement([
-      'input[aria-label="Add New Row"]',
-      'input[aria-label*="Add new task" i]',
-      'textarea[aria-label*="Add new task" i]'
-    ], { timeout: 5000 });
-
-    if (!input) {
-      throw new Error('Add task input did not appear');
-    }
-
-    input.focus({ preventScroll: true });
-    input.value = '';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.value = taskName;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    if (typeof input.blur === 'function') {
-      input.blur();
-    }
-
-    this.dispatchKeyboardSequence(input, ['Enter']);
-
-    await this.waitForCondition(() => this.findTaskRowElementByName(normalizedName), { timeout: 6000 }).catch(() => {
+    await this.waitForCondition(() => this.findTaskRowElementByName(normalizedName), { timeout: 10000 }).catch(() => {
       throw new Error('Task row was not created');
     });
+
+    await this.waitForCondition(() => this.findTaskDataByName(normalizedName), { timeout: 8000 }).catch(() => null);
 
     this.extractData();
 
@@ -904,27 +946,8 @@ class PlannerDataExtractor {
       throw new Error('Task row not found');
     }
 
-    let detailPanel = null;
-
     if (this.isBoardView()) {
-      this.simulateHover(row);
-      this.simulateClick(row);
-
-      detailPanel = await this.waitForElement([
-        '[class*="detail"][role]',
-        '[class*="panel"][role]'
-      ], { timeout: 5000 }).catch(() => null);
-
-      if (!detailPanel) {
-        const boardDetailsButton = row.querySelector('[aria-label*="Open details" i], [title*="Open details" i]');
-        if (boardDetailsButton) {
-          this.simulateClick(boardDetailsButton);
-          detailPanel = await this.waitForElement([
-            '[class*="detail"][role]',
-            '[class*="panel"][role]'
-          ], { timeout: 5000 }).catch(() => null);
-        }
-      }
+      await this.activateBoardCard(row);
     } else {
       this.simulateHover(row);
 
@@ -936,16 +959,19 @@ class PlannerDataExtractor {
         this.simulateClick(detailsButton);
       } else {
         this.simulateClick(row);
+        this.simulateDoubleClick(row);
+        this.dispatchKeyboardSequence(row, ['Enter']);
       }
-
-      detailPanel = await this.waitForElement([
-        '[class*="detail"][role]',
-        '[class*="panel"][role]'
-      ], { timeout: 5000 }).catch(() => null);
     }
+
+    const detailPanel = await this.waitForCondition(() => this.getTaskDetailPanelElement(), { timeout: 12000 }).catch(() => null);
 
     if (!detailPanel) {
       throw new Error('Task detail panel did not open');
+    }
+
+    if (this.isBoardView()) {
+      this.populateBoardTaskDetails(detailPanel);
     }
 
     this.extractTaskDetails();
@@ -953,6 +979,65 @@ class PlannerDataExtractor {
     this.sendDataToBackground();
 
     return this.findTaskDataByName(normalized);
+  }
+
+  async activateBoardCard(card) {
+    if (!card) return;
+
+    this.simulateHover(card);
+    this.simulateClick(card);
+
+    const immediatePanel = await this.waitForCondition(() => this.getTaskDetailPanelElement(), { timeout: 1200 }).catch(() => null);
+    if (immediatePanel) {
+      return;
+    }
+
+    const quickAction = await this.waitForCondition(() =>
+      card.querySelector('[aria-label*="Open details" i], [title*="Open details" i], button[data-automation-id*="details" i]')
+    , { timeout: 1500 }).catch(() => null);
+
+    if (quickAction) {
+      this.simulateClick(quickAction);
+      return;
+    }
+
+    if (typeof card.focus === 'function') {
+      card.focus({ preventScroll: true });
+    }
+
+    this.dispatchKeyboardSequence(card, ['Enter']);
+    this.simulateDoubleClick(card);
+  }
+
+  getTaskDetailPanelElement() {
+    const selectors = [
+      '.taskDetailsPane',
+      '.taskDetailsContainer',
+      '.task-details-pane',
+      '.ms-Panel.taskDetailsPanel',
+      '.ms-Modal.ms-Dialog.taskDetailsContainer',
+      '[data-automation-id*="taskdetails" i]',
+      '[class*="taskDetails" i]',
+      '[role="dialog"][aria-label*="task" i]',
+      '[role="dialog"][aria-labelledby*="task" i]'
+    ];
+
+    for (const selector of selectors) {
+      const element = document.querySelector(selector);
+      if (element) {
+        return element;
+      }
+    }
+
+    const dialogs = document.querySelectorAll('div[role="dialog"], section[role="dialog"], section[role="region"]');
+    for (const dialog of dialogs) {
+      const label = `${dialog.getAttribute('aria-label') || ''} ${dialog.textContent || ''}`.toLowerCase();
+      if (label.includes('task') && label.includes('detail')) {
+        return dialog;
+      }
+    }
+
+    return null;
   }
 
   findAddTaskControl() {
@@ -1021,13 +1106,16 @@ class PlannerDataExtractor {
     if (ariaLabel) {
       const match = ariaLabel.match(/Bucket:\s*([^,.]+)/i);
       if (match && match[1]) {
-        return match[1].trim();
+        const label = this.cleanTaskTitle(match[1]);
+        if (label) {
+          return label;
+        }
       }
     }
 
     const header = column.querySelector('[role="heading"], h2, h3, .column-header, .bucket-header, .bucketHeader');
     if (header) {
-      const text = header.textContent?.trim();
+      const text = this.cleanTaskTitle(header.textContent);
       if (text) {
         return text;
       }
@@ -1045,17 +1133,33 @@ class PlannerDataExtractor {
     return null;
   }
 
+  cleanTaskTitle(name) {
+    if (!name) return '';
+
+    return String(name)
+      .replace(/^Task Name\s+/i, '')
+      .replace(/Use the space or enter key[\s\S]*$/i, '')
+      .replace(/Use arrow keys[\s\S]*$/i, '')
+      .replace(/Finish[\s\S]*$/i, '')
+      .replace(/Assign this task/gi, '')
+      .replace(/(?:day|due)\s*\d{1,2}\/\d{1,2}/gi, '')
+      .replace(/\b[0-9]+%\s+complete\b/gi, '')
+      .replace(/[\uE000-\uF8FF]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   buildBoardTaskFromCard(card, bucketName) {
     if (!card || card.closest('.add-task-card')) {
       return null;
     }
 
     const titleElement = card.querySelector('[aria-label*="Task Name"], [aria-label*="Task" i], [data-task-title], .title, .task-title, .task-name, h3, h4, [role="textbox"]');
-    let name = titleElement?.textContent?.trim();
+    let name = this.cleanTaskTitle(titleElement?.textContent?.trim());
 
     if (!name) {
       const ariaLabel = card.getAttribute('aria-label') || titleElement?.getAttribute?.('aria-label');
-      name = this.getTaskNameFromAriaLabel(ariaLabel);
+      name = this.cleanTaskTitle(this.getTaskNameFromAriaLabel(ariaLabel));
     }
 
     if (!name || this.shouldSkipTaskName(name)) {
@@ -1075,10 +1179,27 @@ class PlannerDataExtractor {
     const avatars = card.querySelectorAll('.avatar, [class*="avatar"], [class*="assigned"], .ms-Facepile-itemButton');
     if (avatars.length > 0) {
       const assignees = Array.from(avatars)
-        .map(avatar => avatar.getAttribute('title') || avatar.getAttribute('alt') || avatar.textContent?.trim())
+        .map(avatar =>
+          this.extractAssigneeFromText(
+            avatar.getAttribute('title') ||
+            avatar.getAttribute('alt') ||
+            avatar.textContent?.trim()
+          )
+        )
         .filter(Boolean);
-      if (assignees.length > 0) {
-        task.assignedTo = assignees;
+
+      const uniqueAssignees = Array.from(new Set(assignees));
+      const hasNamedAssignee = uniqueAssignees.some(name => name && name !== 'Unassigned');
+      const filteredAssignees = hasNamedAssignee
+        ? uniqueAssignees.filter(name => name !== 'Unassigned')
+        : uniqueAssignees;
+
+      if (filteredAssignees.length === 1) {
+        task.assignedTo = filteredAssignees[0];
+      } else if (filteredAssignees.length > 1) {
+        task.assignedTo = filteredAssignees;
+      } else {
+        task.assignedTo = 'Unassigned';
       }
     }
 
@@ -1090,6 +1211,10 @@ class PlannerDataExtractor {
       }
     }
 
+    if (!task.assignedTo) {
+      task.assignedTo = 'Unassigned';
+    }
+
     return task;
   }
 
@@ -1099,7 +1224,7 @@ class PlannerDataExtractor {
     const gridCandidates = document.querySelectorAll('[aria-label*="Task Name"], [role="gridcell"]');
     for (const candidate of gridCandidates) {
       const label = candidate.getAttribute('aria-label');
-      const text = candidate.textContent?.trim();
+      const text = this.cleanTaskTitle(candidate.textContent);
       if (label && this.normalizeTaskName(label).includes(`task name ${normalizedName}`)) {
         return candidate.closest('[role="row"]') || candidate;
       }
@@ -1115,13 +1240,13 @@ class PlannerDataExtractor {
         continue;
       }
       const titleElement = card.querySelector('[data-task-title], .title, .task-name, [class*="title"], [role="textbox"]');
-      const text = titleElement?.textContent?.trim();
+      const text = this.cleanTaskTitle(titleElement?.textContent);
       if (text && this.normalizeTaskName(text) === normalizedName) {
         return card;
       }
 
       const ariaLabel = card.getAttribute('aria-label') || titleElement?.getAttribute?.('aria-label');
-      const labelName = this.getTaskNameFromAriaLabel(ariaLabel);
+      const labelName = this.cleanTaskTitle(this.getTaskNameFromAriaLabel(ariaLabel));
       if (labelName && this.normalizeTaskName(labelName) === normalizedName) {
         return card;
       }
@@ -1183,6 +1308,109 @@ class PlannerDataExtractor {
     }
     fire(MouseEvent, 'mouseup');
     fire(MouseEvent, 'click');
+  }
+
+  simulateDoubleClick(element) {
+    if (!element) return;
+    const dblClick = new MouseEvent('dblclick', { bubbles: true, cancelable: true });
+    element.dispatchEvent(dblClick);
+  }
+
+  populateBoardTaskDetails(detailPanel) {
+    if (!detailPanel) return;
+
+    const formatDate = (date) => {
+      const pad = (value) => String(value).padStart(2, '0');
+      const month = pad(date.getMonth() + 1);
+      const day = pad(date.getDate());
+      const year = date.getFullYear();
+      return `${month}/${day}/${year}`;
+    };
+
+    const dispatchInputEvents = (element) => {
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      element.dispatchEvent(new Event('blur', { bubbles: true }));
+    };
+
+    const setInputValue = (selector, value) => {
+      const input = detailPanel.querySelector(selector);
+      if (!input) return;
+      input.focus?.({ preventScroll: true });
+      input.value = value;
+      dispatchInputEvents(input);
+    };
+
+    const notesEditor = detailPanel.querySelector('.notes-editor[contenteditable="true"]');
+    if (notesEditor && notesEditor.textContent.trim() === '' || notesEditor?.textContent?.includes('Add a note')) {
+      const noteText = 'Added automatically by Planner Interface.';
+      notesEditor.focus?.({ preventScroll: true });
+      notesEditor.textContent = noteText;
+      notesEditor.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      notesEditor.dispatchEvent(new Event('blur', { bubbles: true }));
+    }
+
+    const today = new Date();
+    const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+    setInputValue('input[aria-label^="Start" i]', formatDate(today));
+    setInputValue('input[aria-label*="Finish" i]', formatDate(tomorrow));
+
+    const percentInput = detailPanel.querySelector('.ms-spinButton-input');
+    if (percentInput) {
+      percentInput.focus?.({ preventScroll: true });
+      percentInput.value = '10';
+      dispatchInputEvents(percentInput);
+    }
+
+    const checklistInput = detailPanel.querySelector('[placeholder="Add an item"], [aria-label="Add a checklist item"]');
+    if (checklistInput && !checklistInput.value) {
+      checklistInput.focus?.({ preventScroll: true });
+      checklistInput.value = 'First checklist item';
+      checklistInput.dispatchEvent(new Event('input', { bubbles: true }));
+      this.dispatchKeyboardSequence(checklistInput, ['Enter']);
+    }
+
+    const trySelectDropdown = (labelText) => {
+      const label = Array.from(detailPanel.querySelectorAll('label')).find(node =>
+        node.textContent?.trim().toLowerCase() === labelText
+      );
+      if (!label) return;
+      const comboboxId = label.getAttribute('for');
+      const combobox = comboboxId
+        ? document.getElementById(comboboxId)
+        : label.parentElement?.querySelector('[role="combobox"]');
+      if (!combobox) return;
+
+      this.simulateClick(combobox);
+
+      const optionContainer = document.querySelector('.ms-Callout, .ms-ContextualMenu, [role="listbox"]');
+      if (!optionContainer) {
+        this.simulateClick(combobox);
+        return;
+      }
+
+      const option = optionContainer.querySelector('[role="option"]');
+      if (option) {
+        this.simulateClick(option);
+      }
+
+      this.simulateClick(combobox);
+    };
+
+    trySelectDropdown('bucket');
+    trySelectDropdown('priority');
+
+    const labelButton = Array.from(detailPanel.querySelectorAll('button')).find(button =>
+      /add label/i.test(button.getAttribute('aria-label') || button.textContent || '')
+    );
+    if (labelButton) {
+      this.simulateClick(labelButton);
+      const labelMenu = document.querySelector('.ms-ContextualMenu, .ms-Callout');
+      const firstLabel = labelMenu?.querySelector('[role="menuitem"], button, [role="option"]');
+      if (firstLabel) {
+        this.simulateClick(firstLabel);
+      }
+    }
   }
 
   simulateHover(element) {

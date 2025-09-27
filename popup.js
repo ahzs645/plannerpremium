@@ -238,9 +238,10 @@ class PlannerPopup {
 
       taskElement.title = 'Click to open this task in Planner';
 
-      const assigneeValue = Array.isArray(task.assignedTo)
-        ? (task.assignedTo[0] || 'Unassigned')
-        : (task.assignedTo || 'Unassigned');
+      const rawAssignee = Array.isArray(task.assignedTo)
+        ? (task.assignedTo[0] || '')
+        : (task.assignedTo || '');
+      const assigneeValue = this.cleanAssignee(rawAssignee);
       const bucketInfo = task.bucket ? `<span>Bucket: ${task.bucket}</span>` : '';
 
       taskElement.innerHTML = `
@@ -312,6 +313,8 @@ class PlannerPopup {
 
     const exactMatches = new Set([
       'add new task',
+      'add bucket',
+      'add new bucket',
       'filters',
       'grid',
       'board',
@@ -319,6 +322,7 @@ class PlannerPopup {
       'charts',
       'my plans',
       'assigned to',
+      'assign this task',
       'start',
       'finish',
       'actions',
@@ -365,20 +369,37 @@ class PlannerPopup {
 
     let taskName = String(rawName);
 
-    if (taskName.includes('Task Name ')) {
-      const match = taskName.match(/Task Name\s+([^.]+)/);
-      if (match) {
-        taskName = match[1];
-      }
-    }
-
     taskName = taskName
-      .replace(/Use the space or enter key.*$/i, '')
+      .replace(/^Task Name\s+/i, '')
+      .replace(/Use the space or enter key[\s\S]*$/i, '')
+      .replace(/Use arrow keys[\s\S]*$/i, '')
+      .replace(/Finish[\s\S]*$/i, '')
+      .replace(/Assign this task/gi, '')
+      .replace(/(?:day|due)\s*\d{1,2}\/\d{1,2}/gi, '')
+      .replace(/\b[0-9]+%\s+complete\b/gi, '')
+      .replace(/[\uE0C0-\uF8FF]/g, '')
       .replace(/\s+/g, ' ')
       .replace(/\.+\s*$/, '')
       .trim();
 
     return taskName;
+  }
+
+  cleanAssignee(rawValue) {
+    if (!rawValue && rawValue !== 0) {
+      return 'Unassigned';
+    }
+
+    const assignee = String(rawValue)
+      .replace(/[\uE0C0-\uF8FF]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!assignee || /assign this task/i.test(assignee) || /not assigned/i.test(assignee)) {
+      return 'Unassigned';
+    }
+
+    return assignee;
   }
 
   startsWithTerm(value, term) {
@@ -400,6 +421,31 @@ class PlannerPopup {
       taskData: this.currentData.taskData,
       timestamp: this.currentData.timestamp
     };
+
+    const rowsHtml = allTasksData.taskData.map(task => {
+      const name = this.cleanTaskName(task.name) || 'Untitled';
+      const assigned = Array.isArray(task.assignedTo)
+        ? task.assignedTo
+            .map(value => this.cleanAssignee(value))
+            .filter(Boolean)
+            .join(', ')
+        : this.cleanAssignee(task.assignedTo);
+      const progress = task.progress || 0;
+      const priority = task.priority || 'Normal';
+      const bucket = task.bucket || 'No Bucket';
+      const status = task.completed ? 'Completed' : 'Active';
+
+      return `
+              <tr>
+                <td>${name}</td>
+                <td>${assigned}</td>
+                <td>${progress}%</td>
+                <td>${priority}</td>
+                <td>${bucket}</td>
+                <td>${status}</td>
+              </tr>
+            `;
+    }).join('');
 
     const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(`
       <!DOCTYPE html>
@@ -431,16 +477,7 @@ class PlannerPopup {
             </tr>
           </thead>
           <tbody>
-            ${allTasksData.taskData.map(task => `
-              <tr>
-                <td>${task.name || 'Untitled'}</td>
-                <td>${task.assignedTo || 'Unassigned'}</td>
-                <td>${task.progress || 0}%</td>
-                <td>${task.priority || 'Normal'}</td>
-                <td>${task.bucket || 'No Bucket'}</td>
-                <td>${task.completed ? 'Completed' : 'Active'}</td>
-              </tr>
-            `).join('')}
+            ${rowsHtml}
           </tbody>
         </table>
       </body>
