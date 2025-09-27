@@ -971,7 +971,7 @@ class PlannerDataExtractor {
     }
 
     if (this.isBoardView()) {
-      this.populateBoardTaskDetails(detailPanel);
+      await this.populateBoardTaskDetails(detailPanel);
     }
 
     this.extractTaskDetails();
@@ -1047,7 +1047,10 @@ class PlannerDataExtractor {
       '[id^="data-cy-new-row"]',
       '.new-row-placeholder',
       '[aria-label="Add new task"]',
-      '[aria-label*="Add new task" i]'
+      '[aria-label*="Add new task" i]',
+      'button[title="Add task"]',
+      'button[data-automation-id*="addtask" i]',
+      'button[aria-label*="Add task" i]'
     ];
 
     for (const selector of selectors) {
@@ -1316,7 +1319,7 @@ class PlannerDataExtractor {
     element.dispatchEvent(dblClick);
   }
 
-  populateBoardTaskDetails(detailPanel) {
+  async populateBoardTaskDetails(detailPanel) {
     if (!detailPanel) return;
 
     const formatDate = (date) => {
@@ -1327,10 +1330,37 @@ class PlannerDataExtractor {
       return `${month}/${day}/${year}`;
     };
 
+    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    const fireInputEvent = (element, type = 'input') => {
+      if (typeof window !== 'undefined' && typeof window.InputEvent === 'function') {
+        try {
+          element.dispatchEvent(new window.InputEvent(type, { bubbles: true }));
+          return;
+        } catch (error) {
+          // Fall back to generic event
+        }
+      }
+      element.dispatchEvent(new Event(type, { bubbles: true }));
+    };
+
     const dispatchInputEvents = (element) => {
-      element.dispatchEvent(new Event('input', { bubbles: true }));
+      fireInputEvent(element, 'input');
       element.dispatchEvent(new Event('change', { bubbles: true }));
       element.dispatchEvent(new Event('blur', { bubbles: true }));
+    };
+
+    const typeText = async (element, text) => {
+      if (!element) return;
+      element.focus?.({ preventScroll: true });
+      element.value = '';
+      fireInputEvent(element, 'input');
+      for (const char of text) {
+        element.value += char;
+        fireInputEvent(element, 'input');
+        await wait(40);
+      }
+      element.dispatchEvent(new Event('change', { bubbles: true }));
     };
 
     const setInputValue = (selector, value) => {
@@ -1342,11 +1372,12 @@ class PlannerDataExtractor {
     };
 
     const notesEditor = detailPanel.querySelector('.notes-editor[contenteditable="true"]');
-    if (notesEditor && notesEditor.textContent.trim() === '' || notesEditor?.textContent?.includes('Add a note')) {
+    const notesText = notesEditor?.textContent || '';
+    if (notesEditor && (notesText.trim() === '' || /add a note/i.test(notesText))) {
       const noteText = 'Added automatically by Planner Interface.';
       notesEditor.focus?.({ preventScroll: true });
       notesEditor.textContent = noteText;
-      notesEditor.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      fireInputEvent(notesEditor, 'input');
       notesEditor.dispatchEvent(new Event('blur', { bubbles: true }));
     }
 
@@ -1366,8 +1397,9 @@ class PlannerDataExtractor {
     if (checklistInput && !checklistInput.value) {
       checklistInput.focus?.({ preventScroll: true });
       checklistInput.value = 'First checklist item';
-      checklistInput.dispatchEvent(new Event('input', { bubbles: true }));
+      fireInputEvent(checklistInput, 'input');
       this.dispatchKeyboardSequence(checklistInput, ['Enter']);
+      checklistInput.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     const trySelectDropdown = (labelText) => {
@@ -1400,15 +1432,96 @@ class PlannerDataExtractor {
     trySelectDropdown('bucket');
     trySelectDropdown('priority');
 
-    const labelButton = Array.from(detailPanel.querySelectorAll('button')).find(button =>
-      /add label/i.test(button.getAttribute('aria-label') || button.textContent || '')
-    );
-    if (labelButton) {
-      this.simulateClick(labelButton);
-      const labelMenu = document.querySelector('.ms-ContextualMenu, .ms-Callout');
-      const firstLabel = labelMenu?.querySelector('[role="menuitem"], button, [role="option"]');
-      if (firstLabel) {
-        this.simulateClick(firstLabel);
+    const assignButton = detailPanel.querySelector('[aria-label*="Assign this task" i], .ms-Facepile-addButton');
+    if (assignButton) {
+      this.simulateClick(assignButton);
+
+      const assignCallout = await this.waitForCondition(() => {
+        const callouts = Array.from(document.querySelectorAll('.ms-Callout, .ms-ContextualMenu'));
+        return callouts.find(callout => callout.querySelector('input[aria-label*="enter text to search" i], input[data-automation-id*="people" i], input[placeholder*="Search" i]')) || null;
+      }, { timeout: 3000 }).catch(() => null);
+
+      const searchInput = assignCallout?.querySelector('input[aria-label*="enter text to search" i], input[data-automation-id*="people" i], input[placeholder*="Search" i]');
+
+      if (searchInput) {
+        await typeText(searchInput, 'ahmad.jalil@northernhealth.ca');
+        await wait(600);
+
+        const suggestion = await this.waitForCondition(() => {
+          const candidates = Array.from(assignCallout?.querySelectorAll('[role="option"], .ms-Suggestions-item, button, .resourcePickerPersona') || []);
+          return candidates.find(node => {
+            const label = (node.getAttribute?.('aria-label') || node.textContent || '').toLowerCase();
+            return label.includes('ahmad') || label.includes('northernhealth') || label.includes('jalil');
+          }) || candidates[0] || null;
+        }, { timeout: 4000 }).catch(() => null);
+
+        if (suggestion) {
+          this.simulateClick(suggestion);
+          await wait(400);
+        } else {
+          this.dispatchKeyboardSequence(searchInput, ['Enter']);
+          await wait(300);
+        }
+        await wait(1500);
+      }
+    }
+
+    const labelWrapper = detailPanel.querySelector('.labelPickerWrapper');
+    const labelTrigger = labelWrapper?.querySelector('.addLabel, button, [role="button"]');
+    if (labelWrapper && labelTrigger) {
+      await wait(750);
+      this.simulateClick(labelTrigger);
+
+      const labelInput = await this.waitForCondition(() =>
+        labelWrapper.querySelector('input[aria-label*="label" i]')
+      , { timeout: 2000 }).catch(() => null);
+
+      if (labelInput) {
+        labelInput.focus?.({ preventScroll: true });
+        fireInputEvent(labelInput, 'focus');
+        await wait(250);
+        labelInput.value = 'red';
+        fireInputEvent(labelInput, 'input');
+        labelInput.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(400);
+        this.dispatchKeyboardSequence(labelInput, ['Enter']);
+        await wait(400);
+      }
+
+      const labelMenu = await this.waitForCondition(() =>
+        document.querySelector('.labelPickerSuggestionsDropdown, .ms-Callout .ms-Suggestions')
+      , { timeout: 2000 }).catch(() => null);
+
+      const gatherCandidates = (root) => root
+        ? Array.from(root.querySelectorAll('.ms-Suggestions-itemButton, [role="menuitem"], [role="option"], [role="button"], button, .editableLabelWrapper'))
+        : [];
+
+      let labelCandidates = gatherCandidates(labelMenu);
+      if (!labelCandidates.length) {
+        labelCandidates = gatherCandidates(labelWrapper);
+      }
+
+      if (labelCandidates.length) {
+        const findRedLabel = () => labelCandidates.find(node => {
+          const aria = (node.getAttribute('aria-label') || '').toLowerCase();
+          const text = (node.textContent || '').toLowerCase();
+          const dataColor = (node.getAttribute('data-color') || node.getAttribute('data-colorid') || node.dataset?.color || '').toLowerCase();
+          return aria.includes('red') || text.includes('red') || ['0', 'red', 'label1'].includes(dataColor);
+        });
+
+        const normalizeTarget = (element) => {
+          if (!element) return null;
+          if (element.matches('.ms-Suggestions-itemButton, [role="button"], button')) {
+            return element;
+          }
+          return element.querySelector('.ms-Suggestions-itemButton, [role="button"], button') || element;
+        };
+
+        const targetLabel = normalizeTarget(findRedLabel()) || normalizeTarget(labelCandidates[0]) || null;
+        if (targetLabel) {
+          this.simulateClick(targetLabel);
+          await wait(200);
+        }
       }
     }
   }
