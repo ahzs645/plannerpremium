@@ -115,10 +115,19 @@ class PlannerDataExtractor {
       }
     }
 
+    if (!this.planData.currentView) {
+      const url = window.location.href.toLowerCase();
+      if (url.includes('/view/board')) {
+        this.planData.currentView = 'Board';
+      } else if (url.includes('/view/grid')) {
+        this.planData.currentView = 'Grid';
+      }
+    }
+
     // Look for Grid/Board indicators
     if (document.querySelector('[aria-label*="Grid"]')) {
       this.planData.currentView = 'Grid';
-    } else if (document.querySelector('[aria-label*="Board"]')) {
+    } else if (document.querySelector('[aria-label*="Board"]') || document.querySelector('.board-column')) {
       this.planData.currentView = 'Board';
     }
 
@@ -840,7 +849,7 @@ class PlannerDataExtractor {
     }
 
     let addControl = columnForTask
-      ? columnForTask.querySelector('button[aria-label="Add task"], button[aria-label*="Add task" i], button.bottom-add-task-button')
+      ? this.findBoardAddTaskButton(columnForTask)
       : this.findBoardAddTaskButton();
 
     if (!addControl && !document.querySelector('.add-task-card')) {
@@ -966,13 +975,35 @@ class PlannerDataExtractor {
     return null;
   }
 
-  findBoardAddTaskButton() {
-    const buttons = document.querySelectorAll('button[aria-label="Add task"], button[aria-label*="Add task" i], button.bottom-add-task-button');
-    for (const button of buttons) {
-      if (!button.closest('.add-task-card')) {
-        return button;
+  findBoardAddTaskButton(context) {
+    const searchRoots = [];
+    if (context) {
+      searchRoots.push(context);
+    } else {
+      const columns = document.querySelectorAll('li.board-column, [data-is-focusable].board-column');
+      if (columns.length) {
+        searchRoots.push(...columns);
+      }
+      searchRoots.push(document);
+    }
+
+    const isAddTaskButton = (button) => {
+      if (!button || button.closest('.add-task-card')) return false;
+      const aria = (button.getAttribute('aria-label') || '').toLowerCase();
+      const title = (button.getAttribute('title') || '').toLowerCase();
+      const text = (button.textContent || '').toLowerCase();
+      return aria.includes('add task') || title.includes('add task') || text.includes('add task');
+    };
+
+    for (const root of searchRoots) {
+      const buttons = root.querySelectorAll('button, div[role="button"], span[role="button"]');
+      for (const button of buttons) {
+        if (isAddTaskButton(button)) {
+          return button;
+        }
       }
     }
+
     return null;
   }
 
