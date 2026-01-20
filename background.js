@@ -730,6 +730,181 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // ============================================
+  // IMPORT HANDLERS
+  // ============================================
+
+  // Get import session with existing buckets and resources
+  if (request.action === 'getImportSession') {
+    (async () => {
+      try {
+        // Get stored PSS token and project ID
+        const pssTokenData = await getToken('PSS');
+        const pssProjectData = await getToken('PSS_PROJECT');
+
+        if (!pssTokenData?.token || !pssProjectData?.projectId) {
+          sendResponse({
+            success: false,
+            error: 'No PSS session found. Please navigate to a Premium Plan first.'
+          });
+          return;
+        }
+
+        const token = pssTokenData.token;
+        const projectId = pssProjectData.projectId;
+
+        // Parse project ID
+        let dynamicsOrg, planId;
+        if (projectId.startsWith('msxrm_')) {
+          const parts = projectId.substring(6);
+          const lastUnderscoreIdx = parts.lastIndexOf('_');
+          if (lastUnderscoreIdx > 0) {
+            dynamicsOrg = parts.substring(0, lastUnderscoreIdx);
+            planId = parts.substring(lastUnderscoreIdx + 1);
+          }
+        }
+
+        if (!dynamicsOrg || !planId) {
+          sendResponse({ success: false, error: 'Invalid project ID format' });
+          return;
+        }
+
+        // Open project session
+        const session = await openProjectSession(dynamicsOrg, planId, token);
+
+        // Fetch existing buckets and resources
+        const authHeaders = {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        };
+
+        const [bucketsResp, resourcesResp] = await Promise.allSettled([
+          fetch(`${session.baseUrl}/buckets`, { headers: authHeaders }).then(r => r.ok ? r.json() : []),
+          fetch(`${session.baseUrl}/resources/`, { headers: authHeaders }).then(r => r.ok ? r.json() : [])
+        ]);
+
+        const buckets = bucketsResp.status === 'fulfilled' ?
+          (Array.isArray(bucketsResp.value) ? bucketsResp.value : bucketsResp.value?.value || []) : [];
+        const resources = resourcesResp.status === 'fulfilled' ?
+          (Array.isArray(resourcesResp.value) ? resourcesResp.value : resourcesResp.value?.value || []) : [];
+
+        sendResponse({
+          success: true,
+          data: {
+            baseUrl: session.baseUrl,
+            token: token,
+            buckets: buckets.map(b => ({ id: b.id, name: b.name })),
+            resources: resources.map(r => ({
+              id: r.id,
+              name: r.name,
+              userPrincipalName: r.userPrincipalName
+            })),
+            plannerUrl: `https://tasks.office.com` // Generic URL
+          }
+        });
+      } catch (error) {
+        console.error('[Background] getImportSession error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Create a task for import
+  if (request.action === 'createImportTask') {
+    const { taskData, baseUrl, token } = request;
+
+    (async () => {
+      try {
+        const response = await fetch(`${baseUrl}/tasks/`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify(taskData)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to create task: ${response.status} - ${errorText}`);
+        }
+
+        const createdTask = await response.json();
+        sendResponse({ success: true, data: createdTask });
+      } catch (error) {
+        console.error('[Background] createImportTask error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Set task parent (for hierarchy)
+  if (request.action === 'setTaskParent') {
+    const { taskId, parentId, baseUrl, token } = request;
+
+    (async () => {
+      try {
+        const response = await fetch(`${baseUrl}/tasks(${taskId})`, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ parentId: parentId })
+        });
+
+        if (!response.ok && response.status !== 204) {
+          const errorText = await response.text();
+          throw new Error(`Failed to set parent: ${response.status} - ${errorText}`);
+        }
+
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('[Background] setTaskParent error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Create checklist item for import
+  if (request.action === 'createImportChecklist') {
+    const { taskId, name, baseUrl, token } = request;
+
+    (async () => {
+      try {
+        const response = await fetch(`${baseUrl}/tasks(${taskId})/checklistItems`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            name: name,
+            completed: false
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to create checklist: ${response.status} - ${errorText}`);
+        }
+
+        const createdItem = await response.json();
+        sendResponse({ success: true, data: createdItem });
+      } catch (error) {
+        console.error('[Background] createImportChecklist error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
   // Open results page
   if (request.action === 'openResults') {
     chrome.tabs.create({ url: chrome.runtime.getURL('results.html') });

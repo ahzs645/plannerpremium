@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Microsoft Planner Exporter",
-  "version": "1.4",
+  "version": "1.5",
   "description": "Export tasks and plans from Microsoft Planner to JSON/CSV/Text. Add tasks directly from the extension.",
   "permissions": [
     "activeTab",
@@ -41,6 +41,9 @@
         "results.html",
         "results.js",
         "results.css",
+        "import.html",
+        "import.js",
+        "import.css",
         "src/modules/*.js"
       ],
       "matches": ["<all_urls>"]

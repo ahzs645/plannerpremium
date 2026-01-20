@@ -421,6 +421,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('results.html') });
   });
 
+  // Import CSV button
+  document.getElementById('btn-import-csv').addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('import.html') });
+  });
+
   taskTitleInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
       addTask();

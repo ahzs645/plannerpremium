@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Import Tasks - Planner Exporter</title>
+  <link rel="stylesheet" href="import.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Import Tasks from CSV</h1>
+      <p class="header-subtitle">Create tasks in Microsoft Planner from a CSV file</p>
+    </header>
+
+    <!-- Step 1: Upload -->
+    <section id="step-upload" class="step active">
+      <h2>Step 1: Upload CSV File</h2>
+      <div class="upload-zone" id="upload-zone">
+        <div class="upload-icon">📄</div>
+        <p class="upload-text">Drag and drop your CSV file here</p>
+        <p class="upload-subtext">or</p>
+        <input type="file" id="file-input" accept=".csv" hidden>
+        <button class="btn btn-primary" id="btn-browse">Browse Files</button>
+      </div>
+      <div class="upload-info">
+        <h3>CSV Format</h3>
+        <p>Your CSV should have these columns:</p>
+        <code>OutlineNumber,Title,Bucket,Priority,StartDate,DueDate,AssignedTo,Description,ChecklistItems</code>
+        <ul>
+          <li><strong>OutlineNumber</strong> (required): Hierarchy level (1, 1.1, 1.1.1, etc.)</li>
+          <li><strong>Title</strong> (required): Task name</li>
+          <li><strong>Bucket</strong>: Bucket name</li>
+          <li><strong>Priority</strong>: Urgent, High, Medium, or Low</li>
+          <li><strong>StartDate/DueDate</strong>: Date in ISO or MM/DD/YYYY format</li>
+          <li><strong>AssignedTo</strong>: Email addresses, semicolon-separated</li>
+          <li><strong>Description</strong>: Task notes</li>
+          <li><strong>ChecklistItems</strong>: Checklist items, semicolon-separated</li>
+        </ul>
+        <button class="btn btn-secondary btn-small" id="btn-download-template">Download Template CSV</button>
+      </div>
+    </section>
+
+    <!-- Step 2: Preview & Mapping -->
+    <section id="step-preview" class="step hidden">
+      <h2>Step 2: Preview & Configure</h2>
+
+      <div class="preview-summary" id="preview-summary">
+        <div class="summary-stat">
+          <span class="stat-value" id="stat-total">0</span>
+          <span class="stat-label">Total Tasks</span>
+        </div>
+        <div class="summary-stat">
+          <span class="stat-value" id="stat-root">0</span>
+          <span class="stat-label">Root Tasks</span>
+        </div>
+        <div class="summary-stat">
+          <span class="stat-value" id="stat-subtasks">0</span>
+          <span class="stat-label">Subtasks</span>
+        </div>
+        <div class="summary-stat">
+          <span class="stat-value" id="stat-checklists">0</span>
+          <span class="stat-label">Checklist Items</span>
+        </div>
+      </div>
+
+      <div class="validation-errors hidden" id="validation-errors">
+        <h3>Validation Errors</h3>
+        <ul id="error-list"></ul>
+      </div>
+
+      <div class="bucket-mapping" id="bucket-mapping">
+        <h3>Bucket Mapping</h3>
+        <p class="mapping-description">Map CSV buckets to existing plan buckets or skip them:</p>
+        <div id="bucket-map-list" class="mapping-list"></div>
+      </div>
+
+      <div class="preview-table-container">
+        <h3>Task Preview</h3>
+        <div class="view-toggle">
+          <button class="btn btn-small active" id="btn-view-table">Table View</button>
+          <button class="btn btn-small" id="btn-view-tree">Tree View</button>
+        </div>
+        <div id="preview-table-view" class="preview-view">
+          <table class="preview-table" id="preview-table">
+            <thead>
+              <tr>
+                <th>Outline</th>
+                <th>Title</th>
+                <th>Bucket</th>
+                <th>Priority</th>
+                <th>Due Date</th>
+                <th>Assigned</th>
+                <th>Checklist</th>
+              </tr>
+            </thead>
+            <tbody id="preview-body"></tbody>
+          </table>
+        </div>
+        <div id="preview-tree-view" class="preview-view hidden">
+          <div id="preview-tree" class="preview-tree"></div>
+        </div>
+      </div>
+
+      <div class="step-actions">
+        <button class="btn btn-secondary" id="btn-back-upload">Back</button>
+        <button class="btn btn-primary" id="btn-start-import" disabled>Start Import</button>
+      </div>
+    </section>
+
+    <!-- Step 3: Progress -->
+    <section id="step-progress" class="step hidden">
+      <h2>Step 3: Importing Tasks</h2>
+
+      <div class="progress-container">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+        </div>
+        <div class="progress-text">
+          <span id="progress-current">0</span> / <span id="progress-total">0</span> tasks
+        </div>
+      </div>
+
+      <div class="progress-log" id="progress-log"></div>
+
+      <div class="step-actions">
+        <button class="btn btn-secondary" id="btn-cancel-import">Cancel</button>
+      </div>
+    </section>
+
+    <!-- Step 4: Results -->
+    <section id="step-results" class="step hidden">
+      <h2>Import Complete</h2>
+
+      <div class="results-summary" id="results-summary">
+        <div class="result-card success">
+          <span class="result-value" id="result-success">0</span>
+          <span class="result-label">Created</span>
+        </div>
+        <div class="result-card error">
+          <span class="result-value" id="result-failed">0</span>
+          <span class="result-label">Failed</span>
+        </div>
+        <div class="result-card info">
+          <span class="result-value" id="result-skipped">0</span>
+          <span class="result-label">Skipped</span>
+        </div>
+      </div>
+
+      <div class="failed-tasks hidden" id="failed-tasks">
+        <h3>Failed Tasks</h3>
+        <ul id="failed-list"></ul>
+      </div>
+
+      <div class="step-actions">
+        <button class="btn btn-secondary" id="btn-import-another">Import Another CSV</button>
+        <button class="btn btn-primary" id="btn-view-planner">View in Planner</button>
+      </div>
+    </section>
+  </div>
+
+  <script src="import.js"></script>
+</body>
+</html>
