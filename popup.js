@@ -1,745 +1,435 @@
 /**
- * Popup script for Microsoft Planner Interface
+ * Popup Script for Planner Exporter
  */
 
-class PlannerPopup {
-  constructor() {
-    this.currentData = null;
-    this.isConnected = false;
-    this.init();
-  }
+document.addEventListener('DOMContentLoaded', async () => {
+  // Elements
+  const planNameEl = document.getElementById('plan-name');
+  const planTypeEl = document.getElementById('plan-type');
+  const tokenStatusEl = document.getElementById('token-status');
+  const apiStatusEl = document.getElementById('api-status');
+  const statusEl = document.getElementById('status');
+  const exportBtn = document.getElementById('btn-export');
+  const exportProgress = document.getElementById('export-progress');
+  const addTaskBtn = document.getElementById('btn-add-task');
+  const addTaskResult = document.getElementById('add-task-result');
+  const taskTitleInput = document.getElementById('task-title');
+  const bucketSelect = document.getElementById('bucket-select');
+  const refreshBucketsBtn = document.getElementById('btn-refresh-buckets');
+  const taskDueDateInput = document.getElementById('task-due-date');
+  const taskPrioritySelect = document.getElementById('task-priority');
+  const viewResultsBtn = document.getElementById('btn-view-results');
+  const historyList = document.getElementById('history-list');
 
-  async init() {
-    this.setupEventListeners();
-    await this.checkConnection();
-    await this.loadCurrentData();
-    this.updateUI();
-  }
+  // State
+  let currentContext = null;
+  let isExtracting = false;
 
-  setupEventListeners() {
-    // Extract data button
-    document.getElementById('extractDataBtn').addEventListener('click', () => {
-      this.extractData();
-    });
-
-    // Export buttons
-    document.getElementById('exportDataBtn').addEventListener('click', () => {
-      this.toggleExportOptions();
-    });
-
-    document.getElementById('copyDataBtn').addEventListener('click', () => {
-      this.copyToClipboard();
-    });
-
-    // Export format buttons
-    document.getElementById('exportJson').addEventListener('click', () => {
-      this.exportData('json');
-    });
-
-    document.getElementById('exportCsv').addEventListener('click', () => {
-      this.exportData('csv');
-    });
-
-    document.getElementById('exportTxt').addEventListener('click', () => {
-      this.exportData('txt');
-    });
-
-    // Show all tasks button
-    document.getElementById('showAllTasksBtn').addEventListener('click', () => {
-      this.showAllTasks();
-    });
-
-    document.getElementById('triggerAddTaskBtn').addEventListener('click', () => {
-      this.triggerAddTaskWorkflow();
-    });
-
-    // Retry button
-    document.getElementById('retryBtn').addEventListener('click', () => {
-      this.init();
-    });
-
-    // Auto-extract checkbox
-    document.getElementById('autoExtract').addEventListener('change', (e) => {
-      this.saveSettings({ autoExtract: e.target.checked });
-    });
-
-    // Real-time updates checkbox
-    document.getElementById('realTimeUpdates').addEventListener('change', (e) => {
-      this.saveSettings({ realTimeUpdates: e.target.checked });
-    });
-  }
-
-  async checkConnection() {
+  // Check for ongoing extraction on popup open
+  async function checkExtractionState() {
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const state = await chrome.runtime.sendMessage({ action: 'getExtractionState' });
 
-      if (!tab || !tab.url) {
-        this.setConnectionStatus(false, 'No active tab');
-        return;
-      }
+      if (state && state.status === 'extracting') {
+        isExtracting = true;
+        exportBtn.disabled = true;
+        exportProgress.classList.remove('hidden');
 
-      // Check if we're on a Planner page
-      const isPlannerPage = tab.url.includes('planner.cloud.microsoft') ||
-                           tab.url.includes('tasks.office.com');
+        if (state.progress) {
+          updateProgress(state.progress);
+        }
 
-      if (!isPlannerPage) {
-        this.setConnectionStatus(false, 'Not on Planner page');
-        return;
-      }
-
-      // Try to communicate with content script
-      try {
-        const response = await chrome.tabs.sendMessage(tab.id, { action: 'getCurrentData' });
-        this.setConnectionStatus(true, 'Connected to Planner');
-        this.isConnected = true;
-      } catch (error) {
-        this.setConnectionStatus(false, 'Content script not loaded');
-      }
-    } catch (error) {
-      this.setConnectionStatus(false, 'Connection error');
-    }
-  }
-
-  setConnectionStatus(connected, message) {
-    const statusDot = document.getElementById('statusDot');
-    const statusText = document.getElementById('statusText');
-
-    statusDot.className = `status-dot ${connected ? 'connected' : 'error'}`;
-    statusText.textContent = message;
-    this.isConnected = connected;
-  }
-
-  async loadCurrentData() {
-    try {
-      // Try to get data from session storage first
-      const sessionData = sessionStorage.getItem('currentPlannerData');
-      if (sessionData) {
-        this.currentData = this.sanitizeData(JSON.parse(sessionData));
-        return;
-      }
-
-      // Try to get data from content script
-      if (this.isConnected) {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        const response = await chrome.tabs.sendMessage(tab.id, { action: 'getCurrentData' });
-
-        if (response && response.success) {
-          this.currentData = this.sanitizeData(response.data);
+        showStatus(`Extraction in progress (${state.method || 'API'})...`, 'info');
+      } else if (state && state.status === 'complete' && state.completedAt) {
+        // Show recent completion
+        const completedAgo = Date.now() - state.completedAt;
+        if (completedAgo < 30000) { // Within last 30 seconds
+          showStatus(`Extracted ${state.taskCount} tasks!`, 'success');
+        }
+      } else if (state && state.status === 'error' && state.completedAt) {
+        const completedAgo = Date.now() - state.completedAt;
+        if (completedAgo < 30000) {
+          showStatus(`Error: ${state.error}`, 'error');
         }
       }
-
-      // Fallback to stored data
-      const result = await chrome.storage.local.get(['plannerData']);
-      if (result.plannerData) {
-        this.currentData = this.sanitizeData(result.plannerData);
-      }
-    } catch (error) {
-      console.error('Error loading data:', error);
-      this.showError('Failed to load data');
+    } catch (e) {
+      console.log('Could not get extraction state:', e);
     }
   }
 
-  async extractData() {
-    if (!this.isConnected) {
-      this.showError('Not connected to Planner page');
+  // Listen for extraction state changes from background
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.action === 'extractionStateChanged') {
+      const state = message.state;
+
+      if (state.status === 'extracting') {
+        isExtracting = true;
+        exportBtn.disabled = true;
+        exportProgress.classList.remove('hidden');
+
+        if (state.progress) {
+          updateProgress(state.progress);
+        }
+      } else if (state.status === 'complete') {
+        isExtracting = false;
+        exportBtn.disabled = false;
+        exportProgress.classList.add('hidden');
+        showStatus(`Extracted ${state.taskCount} tasks!`, 'success');
+        loadHistory(); // Refresh history
+      } else if (state.status === 'error') {
+        isExtracting = false;
+        exportBtn.disabled = false;
+        exportProgress.classList.add('hidden');
+        showStatus(`Error: ${state.error}`, 'error');
+      }
+    }
+
+    // Also listen for progress updates
+    if (message.action === 'extractionProgress' && message.progress) {
+      updateProgress(message.progress);
+    }
+  });
+
+  // Show status message
+  function showStatus(message, type = 'info') {
+    statusEl.textContent = message;
+    statusEl.className = `status visible ${type}`;
+    setTimeout(() => {
+      statusEl.classList.remove('visible');
+    }, 5000);
+  }
+
+  // Get current tab
+  async function getCurrentTab() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tab;
+  }
+
+  // Check if we're on a Planner page
+  function isPlannerPage(url) {
+    return url && (
+      url.includes('planner.cloud.microsoft') ||
+      url.includes('tasks.office.com')
+    );
+  }
+
+  // Update context display
+  function updateContextDisplay(context) {
+    currentContext = context;
+
+    if (context.planName) {
+      planNameEl.textContent = context.planName;
+    } else if (context.planId) {
+      planNameEl.textContent = `Plan: ${context.planId.substring(0, 8)}...`;
+    } else {
+      planNameEl.textContent = 'No plan detected';
+    }
+
+    // Show plan type
+    if (context.planType === 'premium') {
+      planTypeEl.textContent = 'Premium (Project for the Web)';
+      planTypeEl.className = 'value';
+    } else if (context.planType === 'basic') {
+      planTypeEl.textContent = 'Basic (Standard Planner)';
+      planTypeEl.className = 'value';
+    } else if (context.planId) {
+      planTypeEl.textContent = 'Unknown';
+      planTypeEl.className = 'value';
+    } else {
+      planTypeEl.textContent = '-';
+      planTypeEl.className = 'value';
+    }
+
+    if (context.token) {
+      tokenStatusEl.textContent = 'Found';
+      tokenStatusEl.className = 'value success';
+    } else {
+      tokenStatusEl.textContent = 'Not found - interact with page';
+      tokenStatusEl.className = 'value error';
+    }
+
+    // Show API access status
+    if (context.hasPssAccess) {
+      apiStatusEl.textContent = 'PSS API (Full)';
+      apiStatusEl.className = 'value success';
+    } else if (context.token && context.planType === 'basic') {
+      apiStatusEl.textContent = 'Graph API';
+      apiStatusEl.className = 'value success';
+    } else if (context.planType === 'premium') {
+      apiStatusEl.textContent = 'DOM only - interact with tasks';
+      apiStatusEl.className = 'value';
+    } else {
+      apiStatusEl.textContent = '-';
+      apiStatusEl.className = 'value';
+    }
+
+    // Enable/disable buttons based on context
+    // For premium plans, we can always try DOM extraction even without token
+    const canExport = (context.planType === 'premium') || (context.token && context.planId);
+    exportBtn.disabled = !canExport && !context.planType;
+    addTaskBtn.disabled = !context.token || context.planType === 'premium';
+  }
+
+  // Fetch context from content script
+  async function fetchContext() {
+    const tab = await getCurrentTab();
+
+    if (!isPlannerPage(tab?.url)) {
+      updateContextDisplay({ token: null, planId: null, planName: null, planType: null });
+      showStatus('Please navigate to Microsoft Planner', 'warning');
       return;
     }
 
     try {
-      this.setButtonLoading('extractDataBtn', true);
+      // First, ask the page to refresh its context
+      await chrome.tabs.sendMessage(tab.id, { action: 'refreshContext' }).catch(() => {});
 
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractPlannerData' });
+      // Small delay to let context refresh
+      await new Promise(r => setTimeout(r, 200));
 
-      if (response && response.success) {
-        this.currentData = this.sanitizeData(response.data);
-        this.updateUI();
-        this.showSuccess('Data extracted successfully');
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'getContext' });
+      console.log('[Popup] getContext response:', response);
+      updateContextDisplay(response || {});
+    } catch (error) {
+      console.error('Failed to get context:', error);
+      updateContextDisplay({ token: null, planId: null, planName: null, planType: null });
+      showStatus('Could not connect to Planner page. Try refreshing.', 'error');
+    }
+  }
 
-        // Store the data
-        await chrome.storage.local.set({ plannerData: this.currentData });
+  // Load buckets
+  async function loadBuckets() {
+    const tab = await getCurrentTab();
+
+    if (!currentContext?.token || !currentContext?.planId) {
+      return;
+    }
+
+    bucketSelect.innerHTML = '<option value="">Loading...</option>';
+
+    try {
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'getBuckets' });
+
+      if (response.success && response.buckets) {
+        bucketSelect.innerHTML = '<option value="">Select a bucket...</option>';
+        for (const bucket of response.buckets) {
+          const option = document.createElement('option');
+          option.value = bucket.id;
+          option.textContent = bucket.name;
+          bucketSelect.appendChild(option);
+        }
       } else {
-        this.showError('Failed to extract data');
+        bucketSelect.innerHTML = '<option value="">Failed to load buckets</option>';
       }
     } catch (error) {
-      console.error('Error extracting data:', error);
-      this.showError('Error extracting data');
-    } finally {
-      this.setButtonLoading('extractDataBtn', false);
+      console.error('Failed to load buckets:', error);
+      bucketSelect.innerHTML = '<option value="">Error loading buckets</option>';
     }
   }
 
-  updateUI() {
-    this.hideError();
-
-    this.currentData = this.sanitizeData(this.currentData);
-
-    if (!this.currentData) {
-      this.showNoData();
-      return;
-    }
-
-    const planData = this.currentData.planData || {};
-    const taskData = Array.isArray(this.currentData.taskData)
-      ? this.currentData.taskData
-      : [];
-
-    // Update plan information
-    document.getElementById('planName').textContent = planData.planName || 'Unknown';
-    document.getElementById('currentView').textContent = planData.currentView || 'Unknown';
-    document.getElementById('accessLevel').textContent = planData.accessLevel || 'Unknown';
-    document.getElementById('bucketsCount').textContent =
-      Array.isArray(planData.buckets) ? planData.buckets.length : 0;
-
-    // Update task summary
-    document.getElementById('totalTasks').textContent = taskData.length;
-
-    const completed = taskData.filter(task => task.completed || task.progress === 100).length;
-    const inProgress = taskData.filter(task =>
-      !task.completed && task.progress > 0 && task.progress < 100
-    ).length;
-    const notStarted = taskData.filter(task =>
-      !task.completed && (!task.progress || task.progress === 0)
-    ).length;
-
-    document.getElementById('completedTasks').textContent = completed;
-    document.getElementById('inProgressTasks').textContent = inProgress;
-    document.getElementById('notStartedTasks').textContent = notStarted;
-
-    // Show task list if we have tasks
-    if (taskData.length > 0) {
-      this.populateTaskList(taskData.slice(0, 5)); // Show first 5 tasks
-      document.getElementById('taskListSection').style.display = 'block';
-    } else {
-      document.getElementById('taskListSection').style.display = 'none';
-    }
-
-    // Update last updated time
-    const timestamp = this.currentData.timestamp || new Date().toISOString();
-    document.getElementById('lastUpdated').textContent =
-      new Date(timestamp).toLocaleTimeString();
+  // Get selected extraction mode
+  function getSelectedMode() {
+    const selected = document.querySelector('input[name="extraction-mode"]:checked');
+    return selected ? selected.value : 'quick';
   }
 
-  populateTaskList(tasks) {
-    if (!Array.isArray(tasks) || tasks.length === 0) {
-      document.getElementById('taskListSection').style.display = 'none';
-      return;
+  // Update progress display
+  function updateProgress(progress) {
+    const progressText = exportProgress.querySelector('.progress-text');
+    const progressBar = document.getElementById('progress-bar');
+    const progressDetail = document.getElementById('progress-detail');
+
+    if (progress.message) {
+      progressText.textContent = progress.message;
     }
 
-    const taskList = document.getElementById('taskList');
-    taskList.innerHTML = '';
-
-    tasks.forEach(task => {
-      const taskElement = document.createElement('div');
-      taskElement.className = 'task-item';
-
-      const cleanedName = this.cleanTaskName(task.name);
-      const taskName = cleanedName || 'Untitled Task';
-
-      taskElement.title = 'Click to open this task in Planner';
-
-      const rawAssignee = Array.isArray(task.assignedTo)
-        ? (task.assignedTo[0] || '')
-        : (task.assignedTo || '');
-      const assigneeValue = this.cleanAssignee(rawAssignee);
-      const bucketInfo = task.bucket ? `<span>Bucket: ${task.bucket}</span>` : '';
-
-      taskElement.innerHTML = `
-        <div class="task-name">${taskName}</div>
-        <div class="task-meta">
-          <span>${assigneeValue}</span>
-          ${bucketInfo}
-          <span>${task.progress || 0}% complete</span>
-        </div>
-      `;
-
-      taskElement.addEventListener('click', () => {
-        this.openTaskDetailsFromPopup(taskName);
-      });
-
-      taskList.appendChild(taskElement);
-    });
+    if (progress.total && progress.current !== undefined) {
+      const percent = Math.round((progress.current / progress.total) * 100);
+      progressBar.style.width = `${percent}%`;
+      progressDetail.textContent = `${progress.current} of ${progress.total} tasks`;
+    } else if (progress.status === 'scrolling') {
+      progressBar.style.width = '0%';
+      progressDetail.textContent = 'Loading all tasks...';
+    }
   }
 
-  sanitizeData(data) {
-    if (!data) return null;
+  // Export plan data
+  async function exportPlan() {
+    const tab = await getCurrentTab();
+    const mode = getSelectedMode();
 
-    const planData = { ...(data.planData || {}) };
-    const taskData = this.getDisplayableTasks(data.taskData || []);
+    exportBtn.disabled = true;
+    exportProgress.classList.remove('hidden');
 
-    return {
-      ...data,
-      planData,
-      taskData
+    // Reset progress
+    const progressBar = document.getElementById('progress-bar');
+    const progressDetail = document.getElementById('progress-detail');
+    progressBar.style.width = '0%';
+    progressDetail.textContent = '';
+
+    // Set up message listener for progress updates
+    const progressListener = (message, sender) => {
+      if (sender.tab?.id === tab.id && message.action === 'extractionProgress') {
+        updateProgress(message.progress);
+      }
     };
-  }
-
-  getDisplayableTasks(taskData) {
-    if (!Array.isArray(taskData)) return [];
-
-    const seen = new Set();
-    const result = [];
-
-    taskData.forEach(task => {
-      if (!this.isMeaningfulTask(task)) {
-        return;
-      }
-
-      const cleanedName = this.cleanTaskName(task.name);
-      const key = (task.id || cleanedName).toLowerCase();
-
-      if (!key || seen.has(key)) {
-        return;
-      }
-
-      seen.add(key);
-      result.push({
-        ...task,
-        name: cleanedName
-      });
-    });
-
-    return result;
-  }
-
-  isMeaningfulTask(task) {
-    if (!task) return false;
-
-    const cleanedName = this.cleanTaskName(task.name);
-    if (!cleanedName) return false;
-
-    const normalized = cleanedName.toLowerCase();
-    const simplified = normalized.replace(/[^a-z0-9\s]/g, '');
-
-    const exactMatches = new Set([
-      'add new task',
-      'add bucket',
-      'add new bucket',
-      'filters',
-      'grid',
-      'board',
-      'reports',
-      'charts',
-      'my plans',
-      'assigned to',
-      'assign this task',
-      'start',
-      'finish',
-      'actions',
-      'automation',
-      'extract data',
-      'export json',
-      'copy to clipboard',
-      'quick look',
-      'unassigned'
-    ]);
-
-    if (exactMatches.has(normalized) || exactMatches.has(simplified)) {
-      return false;
-    }
-
-    const prefixMatches = [
-      'basic access',
-      'show all tasks',
-      'connected to planner',
-      'plan information',
-      'plan name',
-      'current view',
-      'total tasks',
-      'tasks summary',
-      'recent tasks',
-      'last updated'
-    ];
-
-    if (prefixMatches.some(entry =>
-      this.startsWithTerm(normalized, entry) || this.startsWithTerm(simplified, entry)
-    )) {
-      return false;
-    }
-
-    if (/^\d+%$/.test(normalized)) {
-      return false;
-    }
-
-    return true;
-  }
-
-  cleanTaskName(rawName) {
-    if (!rawName) return '';
-
-    let taskName = String(rawName);
-
-    taskName = taskName
-      .replace(/^Task Name\s+/i, '')
-      .replace(/Use the space or enter key[\s\S]*$/i, '')
-      .replace(/Use arrow keys[\s\S]*$/i, '')
-      .replace(/Finish[\s\S]*$/i, '')
-      .replace(/Assign this task/gi, '')
-      .replace(/(?:day|due)\s*\d{1,2}\/\d{1,2}/gi, '')
-      .replace(/\b[0-9]+%\s+complete\b/gi, '')
-      .replace(/[\uE0C0-\uF8FF]/g, '')
-      .replace(/\s+/g, ' ')
-      .replace(/\.+\s*$/, '')
-      .trim();
-
-    return taskName;
-  }
-
-  cleanAssignee(rawValue) {
-    if (!rawValue && rawValue !== 0) {
-      return 'Unassigned';
-    }
-
-    const assignee = String(rawValue)
-      .replace(/[\uE0C0-\uF8FF]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (!assignee || /assign this task/i.test(assignee) || /not assigned/i.test(assignee)) {
-      return 'Unassigned';
-    }
-
-    return assignee;
-  }
-
-  startsWithTerm(value, term) {
-    if (!value || !term) return false;
-    if (!value.startsWith(term)) return false;
-    const nextChar = value.charAt(term.length);
-    if (!nextChar) {
-      return true;
-    }
-    return /[^a-z0-9]/i.test(nextChar);
-  }
-
-  showAllTasks() {
-    if (!this.currentData || !this.currentData.taskData) return;
-
-    // Create a new window/tab with all tasks
-    const allTasksData = {
-      planData: this.currentData.planData,
-      taskData: this.currentData.taskData,
-      timestamp: this.currentData.timestamp
-    };
-
-    const rowsHtml = allTasksData.taskData.map(task => {
-      const name = this.cleanTaskName(task.name) || 'Untitled';
-      const assigned = Array.isArray(task.assignedTo)
-        ? task.assignedTo
-            .map(value => this.cleanAssignee(value))
-            .filter(Boolean)
-            .join(', ')
-        : this.cleanAssignee(task.assignedTo);
-      const progress = task.progress || 0;
-      const priority = task.priority || 'Normal';
-      const bucket = task.bucket || 'No Bucket';
-      const status = task.completed ? 'Completed' : 'Active';
-
-      return `
-              <tr>
-                <td>${name}</td>
-                <td>${assigned}</td>
-                <td>${progress}%</td>
-                <td>${priority}</td>
-                <td>${bucket}</td>
-                <td>${status}</td>
-              </tr>
-            `;
-    }).join('');
-
-    const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>All Planner Tasks</title>
-        <style>
-          body { font-family: 'Segoe UI', sans-serif; margin: 20px; }
-          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-          th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-          th { background-color: #6264a7; color: white; }
-          tr:nth-child(even) { background-color: #f2f2f2; }
-          h1 { color: #6264a7; }
-        </style>
-      </head>
-      <body>
-        <h1>All Tasks - ${allTasksData.planData?.planName || 'Unknown Plan'}</h1>
-        <p>Extracted: ${new Date(allTasksData.timestamp).toLocaleString()}</p>
-        <p>Access Level: ${allTasksData.planData?.accessLevel || 'Unknown'}</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Task Name</th>
-              <th>Assigned To</th>
-              <th>Progress</th>
-              <th>Priority</th>
-              <th>Bucket</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rowsHtml}
-          </tbody>
-        </table>
-      </body>
-      </html>
-    `);
-
-    chrome.tabs.create({ url: dataUrl });
-  }
-
-  toggleExportOptions() {
-    const exportSection = document.getElementById('exportOptionsSection');
-    exportSection.style.display = exportSection.style.display === 'none' ? 'block' : 'none';
-  }
-
-  async triggerAddTaskWorkflow() {
-    if (!this.isConnected) {
-      this.showError('Not connected to Planner page');
-      return;
-    }
-
-    const suggestedName = `New Task ${new Date().toLocaleTimeString()}`;
-    const taskName = prompt('Enter a task name to create in Planner', suggestedName);
-
-    if (!taskName || !taskName.trim()) {
-      return;
-    }
-
-    let bucketName = null;
-    const buckets = this.currentData?.planData?.buckets;
-    if (Array.isArray(buckets) && buckets.length > 0) {
-      const defaultBucket = buckets[0];
-      const bucketPrompt = prompt(
-        `Add task to which bucket? (Available: ${buckets.join(', ')})`,
-        defaultBucket
-      );
-      if (bucketPrompt && bucketPrompt.trim()) {
-        bucketName = bucketPrompt.trim();
-      }
-    }
+    chrome.runtime.onMessage.addListener(progressListener);
 
     try {
-      this.hideError();
-      this.setButtonLoading('triggerAddTaskBtn', true);
-
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) {
-        throw new Error('No active Planner tab found');
-      }
-
       const response = await chrome.tabs.sendMessage(tab.id, {
-        action: 'createTaskAndOpenDetails',
-        taskName: taskName.trim(),
-        options: bucketName ? { bucketName } : undefined
+        action: 'extractPlan',
+        mode: mode
       });
 
-      if (!response?.success) {
-        throw new Error(response?.error || 'Add task workflow failed');
-      }
+      if (response.success) {
+        showStatus('Plan exported successfully!', 'success');
 
-      this.currentData = this.sanitizeData(response.data);
-      this.updateUI();
-      this.showSuccess(`Created "${taskName.trim()}" and opened details`);
+        // Save to history
+        await saveToHistory(response.data);
+
+        // Open results page
+        chrome.tabs.create({ url: chrome.runtime.getURL('results.html') });
+      } else {
+        showStatus(response.error || 'Export failed', 'error');
+      }
     } catch (error) {
-      console.error('Error running add task workflow:', error);
-      this.showError(error.message || 'Failed to run add task workflow');
+      console.error('Export error:', error);
+      showStatus('Export failed: ' + error.message, 'error');
     } finally {
-      this.setButtonLoading('triggerAddTaskBtn', false);
+      chrome.runtime.onMessage.removeListener(progressListener);
+      exportBtn.disabled = false;
+      exportProgress.classList.add('hidden');
     }
   }
 
-  async openTaskDetailsFromPopup(taskName) {
-    if (!taskName || !taskName.trim()) return;
-    if (!this.isConnected) {
-      this.showError('Not connected to Planner page');
+  // Add task
+  async function addTask() {
+    const tab = await getCurrentTab();
+    const title = taskTitleInput.value.trim();
+    const bucketId = bucketSelect.value;
+
+    if (!title) {
+      showResult(addTaskResult, 'Please enter a task title', 'error');
       return;
     }
 
-    try {
-      this.hideError();
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) {
-        throw new Error('No active Planner tab found');
-      }
+    if (!bucketId) {
+      showResult(addTaskResult, 'Please select a bucket', 'error');
+      return;
+    }
 
+    addTaskBtn.disabled = true;
+
+    const options = {};
+    if (taskDueDateInput.value) {
+      options.dueDateTime = new Date(taskDueDateInput.value).toISOString();
+    }
+    options.priority = parseInt(taskPrioritySelect.value, 10);
+
+    try {
       const response = await chrome.tabs.sendMessage(tab.id, {
-        action: 'openPlannerTaskDetails',
-        taskName: taskName.trim()
+        action: 'addTask',
+        bucketId: bucketId,
+        title: title,
+        options: options
       });
 
-      if (!response?.success) {
-        throw new Error(response?.error || 'Unable to open task details');
+      if (response.success) {
+        showResult(addTaskResult, `Task "${title}" created successfully!`, 'success');
+        taskTitleInput.value = '';
+        taskDueDateInput.value = '';
+      } else {
+        showResult(addTaskResult, response.error || 'Failed to create task', 'error');
       }
-
-      this.currentData = this.sanitizeData(response.data);
-      this.updateUI();
-      this.showSuccess(`Opened details for "${taskName.trim()}"`);
     } catch (error) {
-      console.error('Error opening task details:', error);
-      this.showError(error.message || 'Failed to open task details');
+      console.error('Add task error:', error);
+      showResult(addTaskResult, 'Failed to create task: ' + error.message, 'error');
+    } finally {
+      addTaskBtn.disabled = false;
     }
   }
 
-  async copyToClipboard() {
-    if (!this.currentData) {
-      this.showError('No data to copy');
-      return;
-    }
-
-    try {
-      const jsonData = JSON.stringify(this.currentData, null, 2);
-      await navigator.clipboard.writeText(jsonData);
-      this.showSuccess('Data copied to clipboard');
-    } catch (error) {
-      console.error('Error copying to clipboard:', error);
-      this.showError('Failed to copy data');
-    }
+  // Show result message
+  function showResult(element, message, type) {
+    element.textContent = message;
+    element.className = `result ${type}`;
+    element.classList.remove('hidden');
+    setTimeout(() => {
+      element.classList.add('hidden');
+    }, 5000);
   }
 
-  exportData(format) {
-    if (!this.currentData) {
-      this.showError('No data to export');
-      return;
-    }
+  // Save export to history
+  async function saveToHistory(data) {
+    const history = await chrome.storage.local.get('plannerExportHistory');
+    const exportHistory = history.plannerExportHistory || [];
 
-    const filename = `planner-data-${new Date().toISOString().split('T')[0]}`;
-    let content, mimeType;
-
-    switch (format) {
-      case 'json':
-        content = JSON.stringify(this.currentData, null, 2);
-        mimeType = 'application/json';
-        break;
-
-      case 'csv':
-        content = this.convertToCSV(this.currentData.taskData);
-        mimeType = 'text/csv';
-        break;
-
-      case 'txt':
-        content = this.convertToText(this.currentData);
-        mimeType = 'text/plain';
-        break;
-
-      default:
-        this.showError('Unknown export format');
-        return;
-    }
-
-    this.downloadFile(content, `${filename}.${format}`, mimeType);
-    this.showSuccess(`Data exported as ${format.toUpperCase()}`);
-  }
-
-  convertToCSV(tasks) {
-    if (!tasks || !Array.isArray(tasks)) return '';
-
-    const headers = ['Name', 'Assigned To', 'Progress', 'Priority', 'Bucket', 'Completed'];
-    const rows = tasks.map(task => [
-      task.name || '',
-      task.assignedTo || '',
-      task.progress || 0,
-      task.priority || '',
-      task.bucket || '',
-      task.completed ? 'Yes' : 'No'
-    ]);
-
-    return [headers, ...rows]
-      .map(row => row.map(field => `"${field}"`).join(','))
-      .join('\n');
-  }
-
-  convertToText(data) {
-    let text = `Microsoft Planner Data Export\n`;
-    text += `Generated: ${new Date().toLocaleString()}\n\n`;
-
-    if (data.planData) {
-      text += `Plan Information:\n`;
-      text += `- Name: ${data.planData.planName || 'Unknown'}\n`;
-      text += `- Current View: ${data.planData.currentView || 'Unknown'}\n`;
-      text += `- Access Level: ${data.planData.accessLevel || 'Unknown'}\n`;
-      text += `- Buckets: ${data.planData.buckets?.length || 0}\n\n`;
-    }
-
-    if (data.taskData && Array.isArray(data.taskData)) {
-      text += `Tasks (${data.taskData.length}):\n`;
-      data.taskData.forEach((task, index) => {
-        text += `${index + 1}. ${task.name || 'Untitled'}\n`;
-        text += `   Assigned: ${task.assignedTo || 'Unassigned'}\n`;
-        text += `   Progress: ${task.progress || 0}%\n`;
-        text += `   Status: ${task.completed ? 'Completed' : 'Active'}\n\n`;
-      });
-    }
-
-    return text;
-  }
-
-  downloadFile(content, filename, mimeType) {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  async saveSettings(settings) {
-    try {
-      const current = await chrome.storage.local.get(['settings']);
-      const updatedSettings = { ...current.settings, ...settings };
-      await chrome.storage.local.set({ settings: updatedSettings });
-    } catch (error) {
-      console.error('Error saving settings:', error);
-    }
-  }
-
-  setButtonLoading(buttonId, loading) {
-    const button = document.getElementById(buttonId);
-    if (loading) {
-      button.disabled = true;
-      if (!button.dataset.originalContent) {
-        button.dataset.originalContent = button.innerHTML;
-      }
-      button.innerHTML = '<span class="loading"></span> Loading...';
-    } else {
-      button.disabled = false;
-      if (button.dataset.originalContent) {
-        button.innerHTML = button.dataset.originalContent;
-        delete button.dataset.originalContent;
-      }
-    }
-  }
-
-  showError(message) {
-    document.getElementById('errorSection').style.display = 'block';
-    document.getElementById('errorMessage').textContent = message;
-  }
-
-  hideError() {
-    document.getElementById('errorSection').style.display = 'none';
-  }
-
-  showSuccess(message) {
-    // You could implement a success notification here
-    console.log('Success:', message);
-  }
-
-  showNoData() {
-    // Show a message when no data is available
-    const sections = ['planInfoSection', 'tasksSummarySection'];
-    sections.forEach(sectionId => {
-      const section = document.getElementById(sectionId);
-      if (section) {
-        section.style.opacity = '0.5';
-      }
+    exportHistory.unshift({
+      planName: data.plan?.title || 'Unknown Plan',
+      taskCount: data.tasks?.length || 0,
+      exportedAt: new Date().toISOString()
     });
-  }
-}
 
-// Initialize the popup when the DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-  new PlannerPopup();
+    // Keep only last 10 exports
+    if (exportHistory.length > 10) {
+      exportHistory.pop();
+    }
+
+    await chrome.storage.local.set({ plannerExportHistory: exportHistory });
+    renderHistory(exportHistory);
+  }
+
+  // Render export history
+  function renderHistory(history) {
+    if (!history || history.length === 0) {
+      historyList.innerHTML = '<p class="empty-state">No exports yet</p>';
+      return;
+    }
+
+    historyList.innerHTML = history.map((item, index) => `
+      <div class="history-item" data-index="${index}">
+        <div class="name">${escapeHtml(item.planName)}</div>
+        <div class="date">${item.taskCount} tasks - ${formatDate(item.exportedAt)}</div>
+      </div>
+    `).join('');
+  }
+
+  // Format date
+  function formatDate(isoString) {
+    const date = new Date(isoString);
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Escape HTML
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // Load history
+  async function loadHistory() {
+    const history = await chrome.storage.local.get('plannerExportHistory');
+    renderHistory(history.plannerExportHistory || []);
+  }
+
+  // Event listeners
+  exportBtn.addEventListener('click', exportPlan);
+  addTaskBtn.addEventListener('click', addTask);
+  refreshBucketsBtn.addEventListener('click', loadBuckets);
+  viewResultsBtn.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('results.html') });
+  });
+
+  taskTitleInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      addTask();
+    }
+  });
+
+  // Initialize
+  await checkExtractionState();
+  await fetchContext();
+  await loadBuckets();
+  await loadHistory();
 });

@@ -1,0 +1,432 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  font-size: 14px;
+  color: #323130;
+  background: #f3f2f1;
+  line-height: 1.5;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+header {
+  background: #0078d4;
+  color: #fff;
+  padding: 24px;
+  border-radius: 8px;
+  margin-bottom: 24px;
+}
+
+header h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.header-info {
+  display: flex;
+  gap: 16px;
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+section {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+section h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: #323130;
+}
+
+.button-group {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #0078d4;
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #106ebe;
+}
+
+.btn-secondary {
+  background: #fff;
+  color: #0078d4;
+  border: 1px solid #0078d4;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #f3f2f1;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.stat-card {
+  background: #fff;
+  padding: 20px;
+  border-radius: 8px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.stat-value {
+  font-size: 32px;
+  font-weight: 700;
+  color: #0078d4;
+  margin-bottom: 4px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #605e5c;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.filters {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-group label {
+  font-size: 12px;
+  color: #605e5c;
+  font-weight: 500;
+}
+
+.filter-group select,
+.filter-group input {
+  padding: 8px 12px;
+  border: 1px solid #8a8886;
+  border-radius: 4px;
+  font-size: 13px;
+  min-width: 150px;
+}
+
+.filter-group select:focus,
+.filter-group input:focus {
+  outline: none;
+  border-color: #0078d4;
+}
+
+.tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.task-card {
+  border: 1px solid #edebe9;
+  border-radius: 8px;
+  padding: 16px;
+  transition: box-shadow 0.15s;
+}
+
+.task-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.task-title {
+  font-weight: 600;
+  color: #323130;
+  font-size: 15px;
+}
+
+.task-status {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.task-status.not-started {
+  background: #f3f2f1;
+  color: #605e5c;
+}
+
+.task-status.in-progress {
+  background: #fff4ce;
+  color: #797673;
+}
+
+.task-status.completed {
+  background: #dff6dd;
+  color: #107c10;
+}
+
+.task-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #605e5c;
+  margin-bottom: 8px;
+}
+
+.task-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.task-description {
+  font-size: 13px;
+  color: #605e5c;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #edebe9;
+}
+
+.task-checklist {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #edebe9;
+}
+
+.task-checklist h4 {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #605e5c;
+}
+
+.checklist-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.checklist-item.completed {
+  text-decoration: line-through;
+  color: #a19f9d;
+}
+
+.buckets-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.bucket-card {
+  border: 1px solid #edebe9;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.bucket-name {
+  font-weight: 600;
+  color: #323130;
+  margin-bottom: 4px;
+}
+
+.bucket-count {
+  font-size: 12px;
+  color: #605e5c;
+}
+
+.empty-state {
+  color: #a19f9d;
+  text-align: center;
+  padding: 32px;
+}
+
+.priority-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+.priority-urgent {
+  background: #d13438;
+}
+
+.priority-important {
+  background: #ff8c00;
+}
+
+.priority-medium {
+  background: #0078d4;
+}
+
+.priority-low {
+  background: #107c10;
+}
+
+/* View toggle */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.section-header h2 {
+  margin-bottom: 0;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-small {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.btn-small.active {
+  background: #0078d4;
+  color: #fff;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Hierarchy view */
+.tasks-hierarchy {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+}
+
+.hierarchy-item {
+  border-bottom: 1px solid #f3f2f1;
+  padding: 8px 0;
+}
+
+.hierarchy-item:last-child {
+  border-bottom: none;
+}
+
+.hierarchy-item.summary-task {
+  background: #faf9f8;
+}
+
+.hierarchy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hierarchy-toggle {
+  width: 16px;
+  text-align: center;
+  color: #605e5c;
+  font-size: 10px;
+}
+
+.hierarchy-number {
+  color: #0078d4;
+  font-weight: 500;
+  min-width: 50px;
+}
+
+.hierarchy-title {
+  flex: 1;
+  min-width: 200px;
+}
+
+.hierarchy-title.bold {
+  font-weight: 600;
+}
+
+.hierarchy-status {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.hierarchy-status.not-started {
+  background: #f3f2f1;
+  color: #605e5c;
+}
+
+.hierarchy-status.in-progress {
+  background: #fff4ce;
+  color: #797673;
+}
+
+.hierarchy-status.completed {
+  background: #dff6dd;
+  color: #107c10;
+}
+
+.hierarchy-date {
+  color: #605e5c;
+  font-size: 11px;
+  min-width: 80px;
+}
+
+.hierarchy-assigned {
+  color: #0078d4;
+  font-size: 11px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

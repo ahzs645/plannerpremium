@@ -1,17 +1,24 @@
 {
   "manifest_version": 3,
-  "name": "Microsoft Planner Automation Interface",
-  "version": "1.0",
-  "description": "Chrome extension to interface with Microsoft Planner for automation",
+  "name": "Microsoft Planner Exporter",
+  "version": "1.4",
+  "description": "Export tasks and plans from Microsoft Planner to JSON/CSV/Text. Add tasks directly from the extension.",
   "permissions": [
     "activeTab",
     "storage",
-    "tabs"
+    "alarms",
+    "downloads"
   ],
   "host_permissions": [
+    "https://graph.microsoft.com/*",
     "https://planner.cloud.microsoft/*",
-    "https://tasks.office.com/*"
+    "https://tasks.office.com/*",
+    "https://project.microsoft.com/*",
+    "https://*.project.microsoft.com/*"
   ],
+  "action": {
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -19,15 +26,24 @@
         "https://tasks.office.com/*"
       ],
       "js": ["content.js"],
-      "run_at": "document_end"
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
-  "action": {
-    "default_popup": "popup.html",
-    "default_title": "Planner Interface"
-  },
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
-  }
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "contextBridge.js",
+        "fetchOverride.js",
+        "results.html",
+        "results.js",
+        "results.css",
+        "src/modules/*.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

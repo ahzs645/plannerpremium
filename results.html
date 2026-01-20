@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Planner Export Results</title>
+  <link rel="stylesheet" href="results.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Planner Export Results</h1>
+      <div class="header-info">
+        <span id="plan-name">-</span>
+        <span id="export-date">-</span>
+      </div>
+    </header>
+
+    <section class="export-actions">
+      <h2>Export Options</h2>
+      <div class="button-group">
+        <button id="btn-export-json" class="btn btn-primary">Download JSON</button>
+        <button id="btn-export-csv" class="btn btn-secondary">Download CSV</button>
+        <button id="btn-export-text" class="btn btn-secondary">Download Text</button>
+      </div>
+    </section>
+
+    <section class="stats">
+      <div class="stat-card">
+        <div class="stat-value" id="total-tasks">0</div>
+        <div class="stat-label">Total Tasks</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="completed-tasks">0</div>
+        <div class="stat-label">Completed</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="in-progress-tasks">0</div>
+        <div class="stat-label">In Progress</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="not-started-tasks">0</div>
+        <div class="stat-label">Not Started</div>
+      </div>
+    </section>
+
+    <section class="filters">
+      <div class="filter-group">
+        <label for="filter-bucket">Bucket:</label>
+        <select id="filter-bucket">
+          <option value="">All Buckets</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="filter-status">Status:</label>
+        <select id="filter-status">
+          <option value="">All Status</option>
+          <option value="not-started">Not Started</option>
+          <option value="in-progress">In Progress</option>
+          <option value="completed">Completed</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="search-tasks">Search:</label>
+        <input type="text" id="search-tasks" placeholder="Search tasks...">
+      </div>
+    </section>
+
+    <section class="tasks-section">
+      <div class="section-header">
+        <h2>Tasks <span id="filtered-count">(0)</span></h2>
+        <div class="view-toggle">
+          <button id="btn-view-list" class="btn btn-small active">List View</button>
+          <button id="btn-view-hierarchy" class="btn btn-small">Hierarchy View</button>
+        </div>
+      </div>
+      <div id="tasks-list" class="tasks-list">
+        <p class="empty-state">No tasks found</p>
+      </div>
+      <div id="tasks-hierarchy" class="tasks-hierarchy hidden">
+        <p class="empty-state">No tasks found</p>
+      </div>
+    </section>
+
+    <section class="buckets-section">
+      <h2>Buckets</h2>
+      <div id="buckets-list" class="buckets-list">
+        <p class="empty-state">No buckets found</p>
+      </div>
+    </section>
+  </div>
+
+  <script src="results.js"></script>
+</body>
+</html>

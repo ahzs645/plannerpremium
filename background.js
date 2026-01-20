@@ -1,577 +1,779 @@
 /**
- * Background script for Microsoft Planner Interface
- * Handles data processing, storage, and API communication
+ * Background Service Worker for Planner Exporter
+ * Handles API calls, token storage, and file downloads
  */
 
-class PlannerBackgroundService {
-  constructor() {
-    this.plannerData = new Map();
-    this.settings = {
-      autoExtract: true,
-      realTimeUpdates: false,
-      dataRetentionDays: 30,
-      maxStoredPlans: 50
-    };
+// ============================================
+// API CONFIGURATION
+// ============================================
 
-    this.init();
-  }
+const GRAPH_API = 'https://graph.microsoft.com/v1.0';
+const PSS_API = 'https://project.microsoft.com/pss/api/v1.0';
 
-  init() {
-    this.setupEventListeners();
-    this.loadSettings();
-    this.cleanupOldData();
-  }
+// ============================================
+// EXTRACTION STATE MANAGEMENT
+// ============================================
 
-  setupEventListeners() {
-    // Listen for messages from content scripts and popup
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      this.handleMessage(request, sender, sendResponse);
-      return true; // Keep the message channel open for async responses
-    });
+// State: idle, extracting, complete, error
+let extractionState = {
+  status: 'idle',
+  progress: null,
+  startedAt: null,
+  completedAt: null,
+  error: null,
+  taskCount: 0,
+  method: null
+};
 
-    // Listen for tab updates to trigger auto-extraction
-    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-      this.handleTabUpdate(tabId, changeInfo, tab);
-    });
+async function updateExtractionState(newState) {
+  extractionState = { ...extractionState, ...newState };
 
-    // Handle extension installation/startup
-    chrome.runtime.onStartup.addListener(() => {
-      this.loadSettings();
-    });
+  // Persist to storage
+  await chrome.storage.local.set({ extractionState });
 
-    chrome.runtime.onInstalled.addListener((details) => {
-      this.handleInstallation(details);
-    });
-  }
+  // Update badge
+  updateBadge(extractionState);
 
-  async handleMessage(request, sender, sendResponse) {
-    try {
-      switch (request.action) {
-        case 'plannerDataExtracted':
-          await this.processPlannerData(request.data, sender.tab);
-          sendResponse({ success: true });
-          break;
+  // Broadcast to any open popups
+  chrome.runtime.sendMessage({
+    action: 'extractionStateChanged',
+    state: extractionState
+  }).catch(() => {}); // Ignore if no listeners
+}
 
-        case 'getPlannerData':
-          const data = await this.getPlannerData(request.planId);
-          sendResponse({ success: true, data });
-          break;
-
-        case 'getAllPlans':
-          const allPlans = await this.getAllPlans();
-          sendResponse({ success: true, plans: allPlans });
-          break;
-
-        case 'exportData':
-          const exportData = await this.exportData(request.format, request.planId);
-          sendResponse({ success: true, data: exportData });
-          break;
-
-        case 'updateSettings':
-          await this.updateSettings(request.settings);
-          sendResponse({ success: true });
-          break;
-
-        case 'getSettings':
-          sendResponse({ success: true, settings: this.settings });
-          break;
-
-        case 'clearData':
-          await this.clearData(request.planId);
-          sendResponse({ success: true });
-          break;
-
-        default:
-          sendResponse({ success: false, error: 'Unknown action' });
-      }
-    } catch (error) {
-      console.error('Error handling message:', error);
-      sendResponse({ success: false, error: error.message });
+function updateBadge(state) {
+  if (state.status === 'extracting') {
+    const progress = state.progress;
+    if (progress?.total && progress?.current !== undefined) {
+      const pct = Math.round((progress.current / progress.total) * 100);
+      chrome.action.setBadgeText({ text: `${pct}%` });
+      chrome.action.setBadgeBackgroundColor({ color: '#0078d4' });
+    } else {
+      chrome.action.setBadgeText({ text: '...' });
+      chrome.action.setBadgeBackgroundColor({ color: '#0078d4' });
     }
-  }
-
-  async processPlannerData(data, tab) {
-    try {
-      // Add metadata
-      const processedData = {
-        ...data,
-        tabId: tab?.id,
-        url: tab?.url,
-        title: tab?.title,
-        extractedAt: new Date().toISOString(),
-        version: chrome.runtime.getManifest().version
-      };
-
-      // Generate plan ID from URL or plan name
-      const planId = this.generatePlanId(processedData);
-      processedData.planId = planId;
-
-      // Store in memory
-      this.plannerData.set(planId, processedData);
-
-      // Store in chrome storage
-      await this.storePlannerData(planId, processedData);
-
-      // Process and analyze the data
-      await this.analyzeData(processedData);
-
-      // Send notification if significant changes detected
-      await this.checkForChanges(planId, processedData);
-
-      console.log(`Processed Planner data for plan: ${planId}`);
-    } catch (error) {
-      console.error('Error processing Planner data:', error);
-    }
-  }
-
-  generatePlanId(data) {
-    // Generate a unique ID based on plan name and URL
-    const planName = data.planData?.planName || 'unknown-plan';
-    const urlHash = this.hashCode(data.url || '');
-    return `${planName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${urlHash}`;
-  }
-
-  hashCode(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    return Math.abs(hash).toString(36);
-  }
-
-  async storePlannerData(planId, data) {
-    try {
-      // Get existing data
-      const result = await chrome.storage.local.get(['plannerPlans', 'plannerIndex']);
-      const plans = result.plannerPlans || {};
-      const index = result.plannerIndex || [];
-
-      // Update plans
-      plans[planId] = data;
-
-      // Update index
-      const existingIndex = index.findIndex(item => item.planId === planId);
-      const indexEntry = {
-        planId,
-        planName: data.planData?.planName || 'Unknown Plan',
-        url: data.url,
-        lastUpdated: data.extractedAt,
-        taskCount: data.taskData?.length || 0
-      };
-
-      if (existingIndex >= 0) {
-        index[existingIndex] = indexEntry;
-      } else {
-        index.push(indexEntry);
-
-        // Limit the number of stored plans
-        if (index.length > this.settings.maxStoredPlans) {
-          const oldestPlan = index.shift();
-          delete plans[oldestPlan.planId];
-        }
-      }
-
-      // Store updated data
-      await chrome.storage.local.set({
-        plannerPlans: plans,
-        plannerIndex: index
-      });
-
-    } catch (error) {
-      console.error('Error storing Planner data:', error);
-    }
-  }
-
-  async analyzeData(data) {
-    try {
-      const analysis = {
-        planId: data.planId,
-        analyzedAt: new Date().toISOString(),
-        metrics: {}
-      };
-
-      if (data.taskData && Array.isArray(data.taskData)) {
-        const tasks = data.taskData;
-
-        analysis.metrics = {
-          totalTasks: tasks.length,
-          completedTasks: tasks.filter(t => t.completed || t.progress === 100).length,
-          inProgressTasks: tasks.filter(t => t.progress > 0 && t.progress < 100).length,
-          notStartedTasks: tasks.filter(t => !t.progress || t.progress === 0).length,
-          assignedTasks: tasks.filter(t => t.assignedTo).length,
-          unassignedTasks: tasks.filter(t => !t.assignedTo).length,
-          averageProgress: tasks.reduce((sum, t) => sum + (t.progress || 0), 0) / tasks.length,
-
-          // Priority distribution
-          priorities: this.groupBy(tasks, 'priority'),
-
-          // Bucket distribution
-          buckets: this.groupBy(tasks, 'bucket'),
-
-          // Assignment distribution
-          assignments: this.groupBy(tasks, 'assignedTo')
-        };
-      }
-
-      // Store analysis
-      await chrome.storage.local.set({
-        [`analysis_${data.planId}`]: analysis
-      });
-
-      return analysis;
-    } catch (error) {
-      console.error('Error analyzing data:', error);
-      return null;
-    }
-  }
-
-  groupBy(array, key) {
-    return array.reduce((groups, item) => {
-      const value = item[key] || 'unspecified';
-      groups[value] = (groups[value] || 0) + 1;
-      return groups;
-    }, {});
-  }
-
-  async checkForChanges(planId, newData) {
-    try {
-      const result = await chrome.storage.local.get([`previous_${planId}`]);
-      const previousData = result[`previous_${planId}`];
-
-      if (previousData) {
-        const changes = this.detectChanges(previousData, newData);
-
-        if (changes.hasSignificantChanges) {
-          await this.sendChangeNotification(planId, changes);
-        }
-      }
-
-      // Store current data as previous for next comparison
-      await chrome.storage.local.set({
-        [`previous_${planId}`]: newData
-      });
-
-    } catch (error) {
-      console.error('Error checking for changes:', error);
-    }
-  }
-
-  detectChanges(oldData, newData) {
-    const changes = {
-      hasSignificantChanges: false,
-      taskChanges: {
-        added: [],
-        removed: [],
-        modified: [],
-        completed: []
-      },
-      planChanges: {}
-    };
-
-    // Compare tasks
-    const oldTasks = oldData.taskData || [];
-    const newTasks = newData.taskData || [];
-
-    const oldTaskIds = new Set(oldTasks.map(t => t.id || t.name));
-    const newTaskIds = new Set(newTasks.map(t => t.id || t.name));
-
-    // Find added tasks
-    newTasks.forEach(task => {
-      const taskId = task.id || task.name;
-      if (!oldTaskIds.has(taskId)) {
-        changes.taskChanges.added.push(task);
-        changes.hasSignificantChanges = true;
-      }
-    });
-
-    // Find removed tasks
-    oldTasks.forEach(task => {
-      const taskId = task.id || task.name;
-      if (!newTaskIds.has(taskId)) {
-        changes.taskChanges.removed.push(task);
-        changes.hasSignificantChanges = true;
-      }
-    });
-
-    // Find modified/completed tasks
-    newTasks.forEach(newTask => {
-      const taskId = newTask.id || newTask.name;
-      const oldTask = oldTasks.find(t => (t.id || t.name) === taskId);
-
-      if (oldTask) {
-        const progressChanged = (oldTask.progress || 0) !== (newTask.progress || 0);
-        const statusChanged = oldTask.completed !== newTask.completed;
-
-        if (progressChanged || statusChanged) {
-          changes.taskChanges.modified.push({
-            old: oldTask,
-            new: newTask,
-            changes: { progressChanged, statusChanged }
-          });
-
-          if (statusChanged && newTask.completed) {
-            changes.taskChanges.completed.push(newTask);
-          }
-
-          changes.hasSignificantChanges = true;
-        }
-      }
-    });
-
-    return changes;
-  }
-
-  async sendChangeNotification(planId, changes) {
-    // Create a notification about the changes
-    const notificationOptions = {
-      type: 'basic',
-      iconUrl: 'icon48.png',
-      title: 'Planner Update Detected',
-      message: this.generateChangeMessage(changes)
-    };
-
-    const notificationsApi = chrome.notifications;
-    if (!notificationsApi || typeof notificationsApi.create !== 'function') {
-      return;
-    }
-
-    try {
-      await notificationsApi.create(
-        `planner_change_${planId}_${Date.now()}`,
-        notificationOptions
-      );
-    } catch (error) {
-      console.error('Error sending notification:', error);
-    }
-  }
-
-  generateChangeMessage(changes) {
-    const messages = [];
-
-    if (changes.taskChanges.added.length > 0) {
-      messages.push(`${changes.taskChanges.added.length} task(s) added`);
-    }
-
-    if (changes.taskChanges.completed.length > 0) {
-      messages.push(`${changes.taskChanges.completed.length} task(s) completed`);
-    }
-
-    if (changes.taskChanges.modified.length > 0) {
-      messages.push(`${changes.taskChanges.modified.length} task(s) updated`);
-    }
-
-    return messages.join(', ') || 'Plan updated';
-  }
-
-  async handleTabUpdate(tabId, changeInfo, tab) {
-    if (!this.settings.autoExtract) return;
-
-    // Check if the tab is a Planner page and has finished loading
-    if (changeInfo.status === 'complete' && tab.url) {
-      const isPlannerPage = tab.url.includes('planner.cloud.microsoft') ||
-                           tab.url.includes('tasks.office.com');
-
-      if (isPlannerPage) {
-        // Small delay to ensure page is fully rendered
-        setTimeout(async () => {
-          try {
-            await chrome.tabs.sendMessage(tabId, { action: 'extractPlannerData' });
-          } catch (error) {
-            // Content script might not be ready yet
-            console.log('Content script not ready for auto-extraction');
-          }
-        }, 2000);
-      }
-    }
-  }
-
-  async handleInstallation(details) {
-    if (details.reason === 'install') {
-      // Set default settings
-      await chrome.storage.local.set({
-        settings: this.settings,
-        plannerPlans: {},
-        plannerIndex: []
-      });
-
-      // Create welcome notification
-      const notificationsApi = chrome.notifications;
-      if (notificationsApi && typeof notificationsApi.create === 'function') {
-        try {
-          await notificationsApi.create('planner_welcome', {
-            type: 'basic',
-            iconUrl: 'icon48.png',
-            title: 'Planner Interface Installed',
-            message: 'Visit a Microsoft Planner page to start extracting data!'
-          });
-        } catch (error) {
-          console.error('Error showing welcome notification:', error);
-        }
-      }
-    }
-  }
-
-  async loadSettings() {
-    try {
-      const result = await chrome.storage.local.get(['settings']);
-      if (result.settings) {
-        this.settings = { ...this.settings, ...result.settings };
-      }
-    } catch (error) {
-      console.error('Error loading settings:', error);
-    }
-  }
-
-  async updateSettings(newSettings) {
-    try {
-      this.settings = { ...this.settings, ...newSettings };
-      await chrome.storage.local.set({ settings: this.settings });
-    } catch (error) {
-      console.error('Error updating settings:', error);
-      throw error;
-    }
-  }
-
-  async getPlannerData(planId) {
-    try {
-      if (this.plannerData.has(planId)) {
-        return this.plannerData.get(planId);
-      }
-
-      const result = await chrome.storage.local.get(['plannerPlans']);
-      const plans = result.plannerPlans || {};
-      return plans[planId] || null;
-    } catch (error) {
-      console.error('Error getting Planner data:', error);
-      return null;
-    }
-  }
-
-  async getAllPlans() {
-    try {
-      const result = await chrome.storage.local.get(['plannerIndex']);
-      return result.plannerIndex || [];
-    } catch (error) {
-      console.error('Error getting all plans:', error);
-      return [];
-    }
-  }
-
-  async exportData(format, planId) {
-    try {
-      let data;
-
-      if (planId) {
-        data = await this.getPlannerData(planId);
-      } else {
-        const result = await chrome.storage.local.get(['plannerPlans']);
-        data = result.plannerPlans || {};
-      }
-
-      switch (format) {
-        case 'json':
-          return JSON.stringify(data, null, 2);
-
-        case 'csv':
-          return this.convertToCSV(data);
-
-        default:
-          throw new Error('Unsupported export format');
-      }
-    } catch (error) {
-      console.error('Error exporting data:', error);
-      throw error;
-    }
-  }
-
-  convertToCSV(data) {
-    // Implementation for CSV export
-    const headers = ['Plan ID', 'Plan Name', 'Task Name', 'Assigned To', 'Progress', 'Status'];
-    const rows = [];
-
-    if (data.taskData && Array.isArray(data.taskData)) {
-      data.taskData.forEach(task => {
-        rows.push([
-          data.planId || '',
-          data.planData?.planName || '',
-          task.name || '',
-          task.assignedTo || '',
-          task.progress || 0,
-          task.completed ? 'Completed' : 'Active'
-        ]);
-      });
-    }
-
-    return [headers, ...rows]
-      .map(row => row.map(field => `"${field}"`).join(','))
-      .join('\n');
-  }
-
-  async clearData(planId) {
-    try {
-      if (planId) {
-        // Clear specific plan
-        this.plannerData.delete(planId);
-
-        const result = await chrome.storage.local.get(['plannerPlans', 'plannerIndex']);
-        const plans = result.plannerPlans || {};
-        const index = result.plannerIndex || [];
-
-        delete plans[planId];
-        const newIndex = index.filter(item => item.planId !== planId);
-
-        await chrome.storage.local.set({
-          plannerPlans: plans,
-          plannerIndex: newIndex
-        });
-
-        // Clear analysis and previous data
-        await chrome.storage.local.remove([
-          `analysis_${planId}`,
-          `previous_${planId}`
-        ]);
-      } else {
-        // Clear all data
-        this.plannerData.clear();
-        await chrome.storage.local.set({
-          plannerPlans: {},
-          plannerIndex: []
-        });
-      }
-    } catch (error) {
-      console.error('Error clearing data:', error);
-      throw error;
-    }
-  }
-
-  async cleanupOldData() {
-    try {
-      const result = await chrome.storage.local.get(['plannerIndex']);
-      const index = result.plannerIndex || [];
-
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - this.settings.dataRetentionDays);
-
-      const plansToRemove = index.filter(plan =>
-        new Date(plan.lastUpdated) < cutoffDate
-      );
-
-      for (const plan of plansToRemove) {
-        await this.clearData(plan.planId);
-      }
-
-      if (plansToRemove.length > 0) {
-        console.log(`Cleaned up ${plansToRemove.length} old plans`);
-      }
-    } catch (error) {
-      console.error('Error cleaning up old data:', error);
-    }
+  } else if (state.status === 'complete') {
+    chrome.action.setBadgeText({ text: '✓' });
+    chrome.action.setBadgeBackgroundColor({ color: '#107c10' });
+    // Clear badge after 5 seconds
+    setTimeout(() => {
+      chrome.action.setBadgeText({ text: '' });
+    }, 5000);
+  } else if (state.status === 'error') {
+    chrome.action.setBadgeText({ text: '!' });
+    chrome.action.setBadgeBackgroundColor({ color: '#d13438' });
+    // Clear badge after 5 seconds
+    setTimeout(() => {
+      chrome.action.setBadgeText({ text: '' });
+    }, 5000);
+  } else {
+    chrome.action.setBadgeText({ text: '' });
   }
 }
 
-// Initialize the background service
-const plannerBackgroundService = new PlannerBackgroundService();
+// Restore state on startup
+chrome.storage.local.get('extractionState', (result) => {
+  if (result.extractionState) {
+    extractionState = result.extractionState;
+    // If it was extracting when service worker died, mark as error
+    if (extractionState.status === 'extracting') {
+      extractionState.status = 'error';
+      extractionState.error = 'Extraction interrupted';
+    }
+  }
+});
 
-console.log('Microsoft Planner Background Service initialized');
+// ============================================
+// TOKEN STORAGE
+// ============================================
+
+const TOKEN_KEYS = {
+  GRAPH: 'plannerGraphToken',
+  PSS: 'plannerPssToken',
+  PSS_PROJECT: 'plannerPssProjectId'
+};
+
+async function storeToken(type, token, metadata = {}) {
+  const key = TOKEN_KEYS[type];
+  if (!key) return;
+
+  await chrome.storage.local.set({
+    [key]: {
+      token,
+      capturedAt: Date.now(),
+      ...metadata
+    }
+  });
+  console.log(`[Background] Stored ${type} token`);
+}
+
+async function getToken(type) {
+  const key = TOKEN_KEYS[type];
+  if (!key) return null;
+
+  const result = await chrome.storage.local.get(key);
+  return result[key];
+}
+
+async function getAllTokens() {
+  const result = await chrome.storage.local.get([
+    TOKEN_KEYS.GRAPH,
+    TOKEN_KEYS.PSS,
+    TOKEN_KEYS.PSS_PROJECT
+  ]);
+
+  return {
+    graphToken: result[TOKEN_KEYS.GRAPH]?.token || null,
+    pssToken: result[TOKEN_KEYS.PSS]?.token || null,
+    pssProjectId: result[TOKEN_KEYS.PSS_PROJECT]?.projectId || null
+  };
+}
+
+// ============================================
+// API WRAPPERS
+// ============================================
+
+async function graphFetch(endpoint, token, options = {}) {
+  const url = endpoint.startsWith('http') ? endpoint : `${GRAPH_API}${endpoint}`;
+
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...options.headers
+    }
+  });
+
+  return response;
+}
+
+async function pssFetch(url, token) {
+  console.log('[Background] PSS Fetch URL:', url);
+
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error('[Background] PSS API error response:', errorText);
+    throw new Error(`PSS API error: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+function mapPssPriority(pssPriority) {
+  if (pssPriority === 1 || pssPriority === 'Urgent') return { value: 1, label: 'Urgent' };
+  if (pssPriority === 2 || pssPriority === 'High') return { value: 3, label: 'High' };
+  if (pssPriority === 3 || pssPriority === 'Medium') return { value: 5, label: 'Medium' };
+  if (pssPriority === 4 || pssPriority === 'Low') return { value: 9, label: 'Low' };
+  return { value: 5, label: 'Medium' };
+}
+
+function sendProgressToTab(tabId, progress) {
+  // Update extraction state with progress
+  updateExtractionState({ progress });
+
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, {
+    action: 'extractionProgress',
+    progress
+  }).catch(() => {}); // Ignore if tab closed
+}
+
+// ============================================
+// GRAPH API - BASIC PLAN DATA
+// ============================================
+
+async function fetchBasicPlanData(planId, token, tabId) {
+  console.log('[Background] Fetching basic plan data via Graph API...');
+
+  sendProgressToTab(tabId, { status: 'fetching', message: 'Fetching plan via Graph API...' });
+
+  // Get plan details
+  const planResponse = await graphFetch(`/planner/plans/${planId}`, token);
+  if (!planResponse.ok) {
+    throw new Error(`Failed to fetch plan: ${planResponse.status}`);
+  }
+  const plan = await planResponse.json();
+
+  // Get all tasks (with pagination)
+  let tasks = [];
+  let nextLink = `/planner/plans/${planId}/tasks`;
+  while (nextLink) {
+    const tasksResponse = await graphFetch(nextLink, token);
+    if (!tasksResponse.ok) break;
+    const tasksData = await tasksResponse.json();
+    tasks = tasks.concat(tasksData.value || []);
+    nextLink = tasksData['@odata.nextLink'];
+  }
+
+  sendProgressToTab(tabId, {
+    status: 'extracting',
+    message: `Found ${tasks.length} tasks, fetching details...`,
+    total: tasks.length,
+    current: 0
+  });
+
+  // Get buckets
+  const bucketsResponse = await graphFetch(`/planner/plans/${planId}/buckets`, token);
+  const bucketsData = await bucketsResponse.json();
+  const buckets = bucketsData.value || [];
+
+  const bucketMap = {};
+  for (const bucket of buckets) {
+    bucketMap[bucket.id] = bucket.name;
+  }
+
+  // Get task details (includes checklist, description)
+  const detailsMap = {};
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    try {
+      const detailResponse = await graphFetch(`/planner/tasks/${task.id}/details`, token);
+      if (detailResponse.ok) {
+        detailsMap[task.id] = await detailResponse.json();
+      }
+    } catch (e) {
+      // Skip details that fail
+    }
+
+    if (i % 5 === 0) {
+      sendProgressToTab(tabId, {
+        status: 'extracting',
+        message: `Fetching task details ${i + 1}/${tasks.length}...`,
+        total: tasks.length,
+        current: i
+      });
+    }
+  }
+
+  sendProgressToTab(tabId, {
+    status: 'complete',
+    message: `Fetched ${tasks.length} tasks via Graph API`,
+    total: tasks.length,
+    current: tasks.length
+  });
+
+  return {
+    plan,
+    tasks,
+    buckets,
+    bucketMap,
+    detailsMap,
+    source: 'graph-api',
+    planType: 'basic',
+    extractionMethod: 'graph-api',
+    extractedAt: new Date().toISOString()
+  };
+}
+
+// ============================================
+// PSS API - PREMIUM PLAN DATA
+// ============================================
+
+// Open a PSS project session - required before making any data calls
+async function openProjectSession(dynamicsOrg, planId, token) {
+  console.log('[Background] Opening project session...');
+  console.log('[Background] Dynamics Org:', dynamicsOrg);
+  console.log('[Background] Plan ID:', planId);
+
+  const response = await fetch(`${PSS_API}/xrm/openproject`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      XrmUrl: `https://${dynamicsOrg}`,
+      XrmProjectId: planId
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[Background] Failed to open project session:', errorText);
+    throw new Error(`Failed to open project: ${response.status} - ${errorText}`);
+  }
+
+  // CRITICAL: Get the location header - this is the base URL for all subsequent calls
+  const locationUrl = response.headers.get('location');
+  console.log('[Background] Session opened. Location URL:', locationUrl);
+
+  const body = await response.json();
+
+  return {
+    baseUrl: locationUrl,
+    sessionCapabilities: body.sessionCapabilities,
+    project: body.project
+  };
+}
+
+async function fetchPremiumPlanData(projectId, token, tabId) {
+  console.log('[Background] Fetching premium plan data via PSS API');
+  console.log('[Background] Project ID:', projectId);
+  console.log('[Background] Token (first 50 chars):', token?.substring(0, 50));
+
+  if (!projectId) {
+    throw new Error('No PSS project ID provided');
+  }
+
+  // Parse project ID: msxrm_{dynamicsOrg}_{planId}
+  let dynamicsOrg, planId;
+  if (projectId.startsWith('msxrm_')) {
+    const parts = projectId.substring(6); // Remove 'msxrm_'
+    const lastUnderscoreIdx = parts.lastIndexOf('_');
+    if (lastUnderscoreIdx > 0) {
+      dynamicsOrg = parts.substring(0, lastUnderscoreIdx);
+      planId = parts.substring(lastUnderscoreIdx + 1);
+    }
+  }
+
+  if (!dynamicsOrg || !planId) {
+    throw new Error(`Invalid project ID format: ${projectId}`);
+  }
+
+  sendProgressToTab(tabId, { status: 'fetching', message: 'Opening project session...' });
+
+  // Step 1: Open project session to get the location URL
+  const session = await openProjectSession(dynamicsOrg, planId, token);
+  const baseUrl = session.baseUrl;
+
+  if (!baseUrl) {
+    throw new Error('No location URL returned from openproject');
+  }
+
+  sendProgressToTab(tabId, { status: 'fetching', message: 'Fetching plan data...' });
+
+  console.log('[Background] Using base URL:', baseUrl);
+
+  // Step 2: Fetch all data using the session's location URL
+  const authHeaders = {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/json'
+  };
+
+  const [
+    tasksResult,
+    bucketsResult,
+    resourcesResult,
+    assignmentsResult,
+    checklistsResult,
+    labelsResult
+  ] = await Promise.allSettled([
+    fetch(`${baseUrl}/tasks/`, { headers: authHeaders }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    fetch(`${baseUrl}/buckets`, { headers: authHeaders }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    fetch(`${baseUrl}/resources/`, { headers: authHeaders }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    fetch(`${baseUrl}/assignments/`, { headers: authHeaders }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    fetch(`${baseUrl}/checklistItems`, { headers: authHeaders }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    fetch(`${baseUrl}/labels`, { headers: authHeaders }).then(r => r.ok ? r.json() : Promise.reject(r.status))
+  ]);
+
+  // Log results
+  console.log('[Background] PSS API results status:', {
+    tasks: tasksResult.status,
+    buckets: bucketsResult.status,
+    resources: resourcesResult.status,
+    assignments: assignmentsResult.status,
+    checklists: checklistsResult.status,
+    labels: labelsResult.status
+  });
+
+  if (tasksResult.status === 'rejected') {
+    console.error('[Background] Tasks fetch failed:', tasksResult.reason);
+  }
+
+  // Log the actual response structure to understand the format
+  if (tasksResult.status === 'fulfilled') {
+    console.log('[Background] Tasks response structure:', tasksResult.value);
+    console.log('[Background] Tasks response keys:', Object.keys(tasksResult.value || {}));
+  }
+
+  // Extract successful results - try both .value (OData) and direct array
+  const extractData = (result) => {
+    if (result.status !== 'fulfilled') return [];
+    const data = result.value;
+    // OData format: { value: [...] }
+    if (data && Array.isArray(data.value)) return data.value;
+    // Direct array format
+    if (Array.isArray(data)) return data;
+    // If it's an object with items
+    if (data && typeof data === 'object') {
+      console.log('[Background] Response data:', data);
+    }
+    return [];
+  };
+
+  const tasks = extractData(tasksResult);
+  const buckets = extractData(bucketsResult);
+  const resources = extractData(resourcesResult);
+  const assignments = extractData(assignmentsResult);
+  const checklists = extractData(checklistsResult);
+  const labels = extractData(labelsResult);
+
+  console.log('[Background] PSS API results:', {
+    tasks: tasks.length,
+    buckets: buckets.length,
+    resources: resources.length,
+    assignments: assignments.length,
+    checklists: checklists.length,
+    labels: labels.length
+  });
+
+  sendProgressToTab(tabId, {
+    status: 'extracting',
+    message: `Processing ${tasks.length} tasks...`,
+    total: tasks.length,
+    current: 0
+  });
+
+  // Build lookup maps
+  const bucketMap = {};
+  buckets.forEach(b => {
+    // PSS API uses 'id' and 'name' directly
+    bucketMap[b.id] = b.name;
+  });
+
+  // Build full resource map with all details
+  const resourceMap = {};
+  const resourceDetailMap = {};
+  resources.forEach(r => {
+    resourceMap[r.id] = r.name;
+    resourceDetailMap[r.id] = {
+      id: r.id,
+      name: r.name,
+      email: r.userPrincipalName || null,
+      jobTitle: r.jobTitle || null,
+      type: r.type || null
+    };
+  });
+
+  // Group assignments by task with full resource details
+  const taskAssignments = {};
+  assignments.forEach(a => {
+    const taskId = a.taskId;
+    const resourceId = a.resourceId;
+    if (!taskAssignments[taskId]) {
+      taskAssignments[taskId] = [];
+    }
+    const resourceDetail = resourceDetailMap[resourceId] || {};
+    taskAssignments[taskId].push({
+      resourceId: resourceId,
+      resourceName: resourceDetail.name || 'Unknown',
+      email: resourceDetail.email || null,
+      jobTitle: resourceDetail.jobTitle || null,
+      percentWorkComplete: a.percentWorkComplete || 0
+    });
+  });
+
+  // Group checklists by task
+  const taskChecklists = {};
+  checklists.forEach(c => {
+    const taskId = c.taskId;
+    if (!taskChecklists[taskId]) {
+      taskChecklists[taskId] = [];
+    }
+    taskChecklists[taskId].push({
+      id: c.id,
+      title: c.name,
+      isChecked: c.checked || false,
+      order: c.order || 0
+    });
+  });
+
+  // Map priority values
+  const mapPriorityLabel = (priority) => {
+    if (priority === 1) return 'Urgent';
+    if (priority === 3) return 'Important';
+    if (priority === 5) return 'Medium';
+    if (priority === 9) return 'Low';
+    return 'Medium';
+  };
+
+  // Enrich tasks with related data
+  const enrichedTasks = tasks.map((task) => {
+    const taskId = task.id;
+    const assignmentDetails = taskAssignments[taskId] || [];
+
+    return {
+      id: taskId,
+      title: task.name || 'Untitled Task',
+      description: task.notes || task.unformattednotes || '',
+      bucketId: task.bucketId,
+      bucketName: bucketMap[task.bucketId] || '',
+      startDateTime: task.scheduledStart || task.actualStart || task.start || null,
+      dueDateTime: task.scheduledFinish || task.finish || null,
+      percentComplete: task.percentComplete || 0,
+      priority: task.priority || 5,
+      priorityLabel: mapPriorityLabel(task.priority),
+      isComplete: (task.percentComplete || 0) >= 100,
+      isSummaryTask: task.summary || false,
+
+      // Assignment details with names AND emails
+      assignedTo: assignmentDetails.map(a => a.resourceName),
+      assignedToEmails: assignmentDetails.map(a => a.email).filter(Boolean),
+      assignments: assignmentDetails, // Full assignment details
+
+      checklist: (taskChecklists[taskId] || []).sort((a, b) => (a.order || 0) - (b.order || 0)),
+      duration: task.scheduledDuration ? `${Math.round(task.scheduledDuration / 3600)} hours` : '',
+
+      // Hierarchy fields
+      outlineLevel: task.outlineLevel || 0,
+      outlineNumber: task.outlineNumber || '',
+      parentId: task.parentId || null,
+      order: task.order || task.index || 0,
+
+      isMilestone: task.milestone || false,
+      isCritical: task.critical || false,
+      source: 'pss-api',
+      // Keep raw data for advanced use
+      raw: task
+    };
+  });
+
+  // Sort tasks by order to maintain hierarchy
+  enrichedTasks.sort((a, b) => a.order - b.order);
+
+  sendProgressToTab(tabId, {
+    status: 'complete',
+    message: `Fetched ${enrichedTasks.length} tasks via PSS API`,
+    total: enrichedTasks.length,
+    current: enrichedTasks.length
+  });
+
+  return {
+    tasks: enrichedTasks,
+    buckets: buckets.map(b => ({
+      id: b.id,
+      name: b.name,
+      order: b.order
+    })),
+    resources: resources.map(r => ({
+      id: r.id,
+      name: r.name,
+      userPrincipalName: r.userPrincipalName,
+      jobTitle: r.jobTitle
+    })),
+    labels: labels.map(l => ({
+      id: l.id,
+      name: l.name,
+      color: l.color
+    })),
+    bucketMap,
+    resourceMap,
+    source: 'pss-api',
+    planType: 'premium',
+    extractionMethod: 'pss-api',
+    extractedAt: new Date().toISOString()
+  };
+}
+
+// ============================================
+// MESSAGE HANDLERS
+// ============================================
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  const tabId = sender.tab?.id;
+
+  // Store token from content script
+  if (request.action === 'storeToken') {
+    const { type, token, metadata } = request;
+    storeToken(type, token, metadata)
+      .then(() => sendResponse({ success: true }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  // Get all stored tokens
+  if (request.action === 'getTokens') {
+    getAllTokens()
+      .then(tokens => sendResponse(tokens))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
+
+  // Get sender tab ID
+  if (request.action === 'getTabId') {
+    sendResponse({ tabId: tabId });
+    return true;
+  }
+
+  // Get current extraction state
+  if (request.action === 'getExtractionState') {
+    sendResponse(extractionState);
+    return true;
+  }
+
+  // DOM extraction started (from content.js)
+  if (request.action === 'domExtractionStarted') {
+    updateExtractionState({
+      status: 'extracting',
+      startedAt: Date.now(),
+      error: null,
+      method: request.method || 'dom',
+      progress: { status: 'extracting', message: 'DOM extraction in progress...' }
+    });
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // DOM extraction completed (from content.js)
+  if (request.action === 'domExtractionCompleted') {
+    updateExtractionState({
+      status: 'complete',
+      completedAt: Date.now(),
+      taskCount: request.taskCount || 0,
+      progress: { status: 'complete', message: `Extracted ${request.taskCount || 0} tasks` }
+    });
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // DOM extraction failed (from content.js)
+  if (request.action === 'domExtractionFailed') {
+    updateExtractionState({
+      status: 'error',
+      error: request.error,
+      completedAt: Date.now()
+    });
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Progress update from content.js (DOM extraction)
+  if (request.action === 'extractionProgress') {
+    // Update state and badge
+    updateExtractionState({ progress: request.progress });
+    return false; // Don't send response, let other listeners handle
+  }
+
+  // Fetch basic plan data via Graph API
+  if (request.action === 'fetchBasicPlan') {
+    const { planId, token } = request;
+    const targetTabId = request.tabId || tabId;
+
+    // Update state to extracting
+    updateExtractionState({
+      status: 'extracting',
+      startedAt: Date.now(),
+      error: null,
+      method: 'graph-api',
+      progress: { status: 'fetching', message: 'Starting Graph API extraction...' }
+    });
+
+    fetchBasicPlanData(planId, token, targetTabId)
+      .then(data => {
+        updateExtractionState({
+          status: 'complete',
+          completedAt: Date.now(),
+          taskCount: data.tasks?.length || 0,
+          progress: { status: 'complete', message: `Extracted ${data.tasks?.length || 0} tasks` }
+        });
+        sendResponse({ success: true, data });
+      })
+      .catch(err => {
+        console.error('[Background] fetchBasicPlan error:', err);
+        updateExtractionState({
+          status: 'error',
+          error: err.message,
+          completedAt: Date.now()
+        });
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  // Fetch premium plan data via PSS API
+  if (request.action === 'fetchPremiumPlan') {
+    const { projectId, token } = request;
+    const targetTabId = request.tabId || tabId;
+
+    // Update state to extracting
+    updateExtractionState({
+      status: 'extracting',
+      startedAt: Date.now(),
+      error: null,
+      method: 'pss-api',
+      progress: { status: 'fetching', message: 'Starting PSS API extraction...' }
+    });
+
+    fetchPremiumPlanData(projectId, token, targetTabId)
+      .then(data => {
+        updateExtractionState({
+          status: 'complete',
+          completedAt: Date.now(),
+          taskCount: data.tasks?.length || 0,
+          progress: { status: 'complete', message: `Extracted ${data.tasks?.length || 0} tasks` }
+        });
+        sendResponse({ success: true, data });
+      })
+      .catch(err => {
+        console.error('[Background] fetchPremiumPlan error:', err);
+        updateExtractionState({
+          status: 'error',
+          error: err.message,
+          completedAt: Date.now()
+        });
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  // Open results page
+  if (request.action === 'openResults') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('results.html') });
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Download file
+  if (request.action === 'downloadFile') {
+    const { content, filename, mimeType } = request;
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+
+    chrome.downloads.download({
+      url: url,
+      filename: filename,
+      saveAs: true
+    }, (downloadId) => {
+      URL.revokeObjectURL(url);
+      sendResponse({ success: true, downloadId });
+    });
+
+    return true;
+  }
+});
+
+// ============================================
+// LIFECYCLE
+// ============================================
+
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === 'install') {
+    console.log('[Planner Exporter] Extension installed');
+  } else if (details.reason === 'update') {
+    console.log('[Planner Exporter] Extension updated to version', chrome.runtime.getManifest().version);
+  }
+});
+
+// Keep service worker alive
+chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'keepAlive') {
+    // Periodic keep-alive ping
+  }
+});
+
+console.log('[Planner Exporter] Background service worker initialized');
