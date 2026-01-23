@@ -90,7 +90,9 @@ chrome.storage.local.get('extractionState', (result) => {
 const TOKEN_KEYS = {
   GRAPH: 'plannerGraphToken',
   PSS: 'plannerPssToken',
-  PSS_PROJECT: 'plannerPssProjectId'
+  PSS_PROJECT: 'plannerPssProjectId',
+  TODO: 'todoToken',
+  TODO_LIST: 'todoListId'
 };
 
 async function storeToken(type, token, metadata = {}) {
@@ -580,6 +582,201 @@ async function fetchPremiumPlanData(projectId, token, tabId) {
 }
 
 // ============================================
+// TO DO API - MICROSOFT TO DO DATA
+// ============================================
+
+// Map To Do status to percentComplete
+function mapToDoStatus(status) {
+  const statusMap = {
+    'notStarted': 0,
+    'inProgress': 50,
+    'completed': 100,
+    'waitingOnOthers': 25,
+    'deferred': 0
+  };
+  return statusMap[status] || 0;
+}
+
+// Map To Do importance to Planner-style priority
+function mapToDoImportance(importance) {
+  const importanceMap = {
+    'low': { value: 9, label: 'Low' },
+    'normal': { value: 5, label: 'Medium' },
+    'high': { value: 3, label: 'High' }
+  };
+  return importanceMap[importance] || { value: 5, label: 'Medium' };
+}
+
+async function fetchToDoListData(listId, token, tabId) {
+  console.log('[Background] Fetching To Do data via Graph API...');
+  console.log('[Background] List ID:', listId);
+
+  sendProgressToTab(tabId, { status: 'fetching', message: 'Fetching To Do lists...' });
+
+  // If no listId provided, fetch all lists and their tasks
+  let lists = [];
+  let targetList = null;
+
+  // Fetch all lists first
+  const listsResponse = await graphFetch('/me/todo/lists', token);
+  if (!listsResponse.ok) {
+    throw new Error(`Failed to fetch To Do lists: ${listsResponse.status}`);
+  }
+  const listsData = await listsResponse.json();
+  lists = listsData.value || [];
+
+  console.log('[Background] Found', lists.length, 'To Do lists');
+
+  // Find the target list or use all lists
+  if (listId) {
+    targetList = lists.find(l => l.id === listId);
+    if (!targetList) {
+      // Try to find by display name
+      targetList = lists.find(l => l.displayName?.toLowerCase() === listId.toLowerCase());
+    }
+  }
+
+  // If still no target list, use the first non-system list or all lists
+  const listsToFetch = targetList ? [targetList] : lists;
+
+  sendProgressToTab(tabId, {
+    status: 'extracting',
+    message: `Fetching tasks from ${listsToFetch.length} list(s)...`,
+    total: listsToFetch.length,
+    current: 0
+  });
+
+  let allTasks = [];
+  const listMap = {};
+
+  for (let i = 0; i < listsToFetch.length; i++) {
+    const list = listsToFetch[i];
+    listMap[list.id] = list.displayName;
+
+    sendProgressToTab(tabId, {
+      status: 'extracting',
+      message: `Fetching "${list.displayName}"...`,
+      total: listsToFetch.length,
+      current: i
+    });
+
+    try {
+      // Fetch tasks for this list (with checklist items expanded)
+      let nextLink = `/me/todo/lists/${list.id}/tasks?$expand=checklistItems`;
+      let listTasks = [];
+
+      while (nextLink) {
+        const tasksResponse = await graphFetch(nextLink, token);
+        if (!tasksResponse.ok) {
+          console.warn(`Failed to fetch tasks for list ${list.displayName}`);
+          break;
+        }
+        const tasksData = await tasksResponse.json();
+        listTasks = listTasks.concat(tasksData.value || []);
+        nextLink = tasksData['@odata.nextLink'];
+      }
+
+      // Enrich tasks with list info
+      listTasks.forEach(task => {
+        task._listId = list.id;
+        task._listName = list.displayName;
+      });
+
+      allTasks = allTasks.concat(listTasks);
+    } catch (err) {
+      console.error(`Error fetching tasks for list ${list.displayName}:`, err);
+    }
+  }
+
+  sendProgressToTab(tabId, {
+    status: 'processing',
+    message: `Processing ${allTasks.length} tasks...`,
+    total: allTasks.length,
+    current: 0
+  });
+
+  // Transform tasks to common format
+  const enrichedTasks = allTasks.map((task) => {
+    const priority = mapToDoImportance(task.importance);
+    const percentComplete = mapToDoStatus(task.status);
+
+    return {
+      id: task.id,
+      title: task.title || 'Untitled Task',
+      description: task.body?.content || '',
+      bucketId: task._listId,
+      bucketName: task._listName, // Use list name as bucket
+      startDateTime: task.startDateTime?.dateTime || null,
+      dueDateTime: task.dueDateTime?.dateTime || null,
+      completedDateTime: task.completedDateTime?.dateTime || null,
+      percentComplete: percentComplete,
+      priority: priority.value,
+      priorityLabel: priority.label,
+      isComplete: task.status === 'completed',
+      status: task.status,
+      importance: task.importance,
+
+      // To Do has no assignments
+      assignedTo: [],
+      assignments: [],
+
+      // Checklist items
+      checklist: (task.checklistItems || []).map(item => ({
+        id: item.id,
+        title: item.displayName,
+        isChecked: item.isChecked || false
+      })),
+
+      // To Do specific fields
+      isReminderOn: task.isReminderOn || false,
+      reminderDateTime: task.reminderDateTime?.dateTime || null,
+      hasAttachments: task.hasAttachments || false,
+      categories: task.categories || [],
+
+      // Meta
+      createdDateTime: task.createdDateTime,
+      lastModifiedDateTime: task.lastModifiedDateTime,
+      source: 'todo-api',
+
+      // Keep raw data
+      raw: task
+    };
+  });
+
+  sendProgressToTab(tabId, {
+    status: 'complete',
+    message: `Fetched ${enrichedTasks.length} tasks from To Do`,
+    total: enrichedTasks.length,
+    current: enrichedTasks.length
+  });
+
+  return {
+    tasks: enrichedTasks,
+    plan: targetList ? {
+      id: targetList.id,
+      title: targetList.displayName
+    } : {
+      id: 'all-lists',
+      title: 'All To Do Lists'
+    },
+    // Use lists as "buckets" for compatibility
+    buckets: listsToFetch.map(l => ({
+      id: l.id,
+      name: l.displayName,
+      isShared: l.isShared || false,
+      isOwner: l.isOwner !== false,
+      wellknownListName: l.wellknownListName
+    })),
+    bucketMap: listMap,
+    source: 'todo-api',
+    serviceType: 'todo',
+    planType: 'todo',
+    extractionMethod: 'graph-api',
+    extractedAt: new Date().toISOString()
+  };
+}
+
+// ============================================
 // MESSAGE HANDLERS
 // ============================================
 
@@ -684,6 +881,42 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       })
       .catch(err => {
         console.error('[Background] fetchBasicPlan error:', err);
+        updateExtractionState({
+          status: 'error',
+          error: err.message,
+          completedAt: Date.now()
+        });
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  // Fetch To Do list data via Graph API
+  if (request.action === 'fetchToDoList') {
+    const { listId, token } = request;
+    const targetTabId = request.tabId || tabId;
+
+    // Update state to extracting
+    updateExtractionState({
+      status: 'extracting',
+      startedAt: Date.now(),
+      error: null,
+      method: 'todo-api',
+      progress: { status: 'fetching', message: 'Starting To Do extraction...' }
+    });
+
+    fetchToDoListData(listId, token, targetTabId)
+      .then(data => {
+        updateExtractionState({
+          status: 'complete',
+          completedAt: Date.now(),
+          taskCount: data.tasks?.length || 0,
+          progress: { status: 'complete', message: `Extracted ${data.tasks?.length || 0} tasks from To Do` }
+        });
+        sendResponse({ success: true, data });
+      })
+      .catch(err => {
+        console.error('[Background] fetchToDoList error:', err);
         updateExtractionState({
           status: 'error',
           error: err.message,

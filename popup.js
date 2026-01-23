@@ -105,28 +105,57 @@ document.addEventListener('DOMContentLoaded', async () => {
     return tab;
   }
 
-  // Check if we're on a Planner page
-  function isPlannerPage(url) {
+  // Check if we're on a supported page (Planner or To Do)
+  function isSupportedPage(url) {
     return url && (
       url.includes('planner.cloud.microsoft') ||
-      url.includes('tasks.office.com')
+      url.includes('tasks.office.com') ||
+      url.includes('to-do.office.com')
     );
+  }
+
+  // Detect service type from URL
+  function detectServiceType(url) {
+    if (url?.includes('to-do.office.com')) return 'todo';
+    if (url?.includes('tasks.office.com') || url?.includes('planner.cloud.microsoft')) return 'planner';
+    return null;
+  }
+
+  // Keep backward compatibility alias
+  function isPlannerPage(url) {
+    return isSupportedPage(url);
   }
 
   // Update context display
   function updateContextDisplay(context) {
     currentContext = context;
 
-    if (context.planName) {
-      planNameEl.textContent = context.planName;
-    } else if (context.planId) {
-      planNameEl.textContent = `Plan: ${context.planId.substring(0, 8)}...`;
+    const isToDoService = context.serviceType === 'todo';
+
+    // Update plan/list name
+    if (isToDoService) {
+      if (context.listName) {
+        planNameEl.textContent = context.listName;
+      } else if (context.listId) {
+        planNameEl.textContent = `List: ${context.listId.substring(0, 8)}...`;
+      } else {
+        planNameEl.textContent = 'All To Do Lists';
+      }
     } else {
-      planNameEl.textContent = 'No plan detected';
+      if (context.planName) {
+        planNameEl.textContent = context.planName;
+      } else if (context.planId) {
+        planNameEl.textContent = `Plan: ${context.planId.substring(0, 8)}...`;
+      } else {
+        planNameEl.textContent = 'No plan detected';
+      }
     }
 
-    // Show plan type
-    if (context.planType === 'premium') {
+    // Show plan/service type
+    if (isToDoService) {
+      planTypeEl.textContent = 'Microsoft To Do';
+      planTypeEl.className = 'value';
+    } else if (context.planType === 'premium') {
       planTypeEl.textContent = 'Premium (Project for the Web)';
       planTypeEl.className = 'value';
     } else if (context.planType === 'basic') {
@@ -149,7 +178,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Show API access status
-    if (context.hasPssAccess) {
+    if (isToDoService && context.token) {
+      apiStatusEl.textContent = 'Graph API (To Do)';
+      apiStatusEl.className = 'value success';
+    } else if (context.hasPssAccess) {
       apiStatusEl.textContent = 'PSS API (Full)';
       apiStatusEl.className = 'value success';
     } else if (context.token && context.planType === 'basic') {
@@ -164,19 +196,50 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Enable/disable buttons based on context
-    // For premium plans, we can always try DOM extraction even without token
-    const canExport = (context.planType === 'premium') || (context.token && context.planId);
-    exportBtn.disabled = !canExport && !context.planType;
-    addTaskBtn.disabled = !context.token || context.planType === 'premium';
+    // For To Do, we need a token; for premium plans, we can try DOM extraction even without token
+    const canExport = isToDoService
+      ? !!context.token
+      : (context.planType === 'premium') || (context.token && context.planId);
+    exportBtn.disabled = !canExport && !context.planType && !isToDoService;
+
+    // Add task is not supported for To Do or premium plans
+    addTaskBtn.disabled = isToDoService || !context.token || context.planType === 'premium';
+
+    // Update UI labels based on service type
+    updateUILabels(isToDoService);
+  }
+
+  // Update UI labels based on service type
+  function updateUILabels(isToDoService) {
+    // Update the "Plan:" label to "List:" for To Do
+    const planLabel = document.querySelector('#context-info .info-row:first-child .label');
+    if (planLabel) {
+      planLabel.textContent = isToDoService ? 'List:' : 'Plan:';
+    }
+
+    // Update export button text
+    exportBtn.textContent = isToDoService ? 'Extract To Do Tasks' : 'Extract Plan Data';
+
+    // Hide/show extraction mode options for To Do (API only, so no mode selection needed)
+    const modeSelection = document.querySelector('.mode-selection');
+    if (modeSelection) {
+      modeSelection.style.display = isToDoService ? 'none' : 'block';
+    }
+
+    // Hide add task section for To Do
+    const addTaskSection = document.getElementById('add-task-section');
+    if (addTaskSection) {
+      addTaskSection.style.display = isToDoService ? 'none' : 'block';
+    }
   }
 
   // Fetch context from content script
   async function fetchContext() {
     const tab = await getCurrentTab();
 
-    if (!isPlannerPage(tab?.url)) {
-      updateContextDisplay({ token: null, planId: null, planName: null, planType: null });
-      showStatus('Please navigate to Microsoft Planner', 'warning');
+    if (!isSupportedPage(tab?.url)) {
+      updateContextDisplay({ token: null, planId: null, planName: null, planType: null, serviceType: null });
+      showStatus('Please navigate to Microsoft Planner or To Do', 'warning');
       return;
     }
 
@@ -192,8 +255,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       updateContextDisplay(response || {});
     } catch (error) {
       console.error('Failed to get context:', error);
-      updateContextDisplay({ token: null, planId: null, planName: null, planType: null });
-      showStatus('Could not connect to Planner page. Try refreshing.', 'error');
+      updateContextDisplay({ token: null, planId: null, planName: null, planType: null, serviceType: null });
+      showStatus('Could not connect to page. Try refreshing.', 'error');
     }
   }
 

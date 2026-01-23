@@ -1,7 +1,10 @@
 /**
  * Context Bridge for Planner Exporter
  * Runs in page context to extract plan info and tokens
- * Supports both Premium Plans (Project for the Web) and Basic Plans (standard Planner)
+ * Supports:
+ * - Premium Plans (Project for the Web)
+ * - Basic Plans (standard Planner)
+ * - Microsoft To Do (to-do.office.com)
  */
 
 (function() {
@@ -19,9 +22,83 @@
     return bridge;
   }
 
+  // Detect service type from URL
+  function detectServiceType() {
+    const hostname = window.location.hostname;
+    if (hostname.includes('to-do.office.com')) return 'todo';
+    if (hostname.includes('tasks.office.com') || hostname.includes('planner.cloud.microsoft')) return 'planner';
+    return null;
+  }
+
+  // Extract To Do context from URL
+  // URL patterns: /tasks/id/{listId}, /tasks/{listId}, /tasks
+  function extractToDoContext() {
+    if (detectServiceType() !== 'todo') return null;
+
+    const pathname = window.location.pathname;
+    let listId = null;
+
+    // Try various URL patterns
+    // Pattern: /tasks/id/{listId}
+    let match = pathname.match(/\/tasks\/id\/([^\/\?]+)/);
+    if (match) {
+      listId = match[1];
+    }
+
+    // Pattern: /tasks/{listId} (where listId is not 'id', 'inbox', 'myday', etc.)
+    if (!listId) {
+      match = pathname.match(/\/tasks\/([^\/\?]+)/);
+      if (match && !['id', 'inbox', 'myday', 'planned', 'all', 'completed', 'assigned'].includes(match[1].toLowerCase())) {
+        listId = match[1];
+      }
+    }
+
+    // Also check for captured list ID from API calls
+    if (!listId && window.__todoListId) {
+      listId = window.__todoListId;
+    }
+
+    return {
+      serviceType: 'todo',
+      listId: listId,
+      listName: getToDoListNameFromDom()
+    };
+  }
+
+  // Get To Do list name from DOM
+  function getToDoListNameFromDom() {
+    // Try various selectors for list name in To Do
+    const selectors = [
+      '[data-automationid="ListHeaderName"]',
+      '[class*="listName"]',
+      '[class*="ListName"]',
+      'h1',
+      '[role="heading"][aria-level="1"]'
+    ];
+
+    for (const selector of selectors) {
+      try {
+        const els = document.querySelectorAll(selector);
+        for (const el of els) {
+          const text = el.textContent?.trim();
+          if (text && text.length > 0 && text.length < 100) {
+            return text;
+          }
+        }
+      } catch (e) {}
+    }
+
+    return null;
+  }
+
   // Extract plan context from URL
   // Supports: /webui/premiumplan/{id}/... and /webui/basicplan/{id}/...
   function extractPlanContext() {
+    // Check if we're on To Do instead
+    if (detectServiceType() === 'todo') {
+      return extractToDoContext();
+    }
+
     const pathname = window.location.pathname;
     const segments = pathname.split('/').filter(Boolean);
 
@@ -125,6 +202,28 @@
     return null;
   }
 
+  // Get To Do token context
+  function getToDoContext() {
+    if (window.__todoToken) {
+      return {
+        token: window.__todoToken,
+        capturedAt: window.__todoTokenCapturedAt,
+        listId: window.__todoListId,
+        source: 'fetch-intercept'
+      };
+    }
+    // Also check if Graph token exists (To Do uses same token)
+    if (window.__plannerGraphToken) {
+      return {
+        token: window.__plannerGraphToken,
+        capturedAt: window.__plannerGraphTokenCapturedAt,
+        listId: window.__todoListId,
+        source: 'graph-token'
+      };
+    }
+    return null;
+  }
+
   // Build PSS project identifier from context
   // Format: msxrm_{dynamicsOrg}_{planId}
   function buildPssProjectId(planId, orgId) {
@@ -206,43 +305,93 @@
   function updateBridge() {
     const bridge = createBridgeElement();
 
-    const planContext = extractPlanContext();
+    const serviceType = detectServiceType();
     const tokenInfo = getAccessToken();
     const pssContext = getPssContext();
-    const planName = getPlanNameFromDom();
+    const todoContext = getToDoContext();
 
-    // Try to get or build the PSS project ID
-    let pssProjectId = pssContext?.projectId || null;
-    if (!pssProjectId && planContext.planType === 'premium' && planContext.planId) {
-      pssProjectId = buildPssProjectId(planContext.planId, planContext.orgId);
+    let data;
+
+    // Handle To Do service
+    if (serviceType === 'todo') {
+      const todoInfo = extractToDoContext();
+      const listName = todoInfo?.listName || getToDoListNameFromDom();
+
+      data = {
+        // Service type
+        serviceType: 'todo',
+
+        // To Do list info
+        listId: todoInfo?.listId || todoContext?.listId || null,
+        listName: listName,
+
+        // For compatibility with existing code
+        planId: null,
+        planType: null,
+        planName: listName,
+
+        // Token info (To Do uses Graph API)
+        token: todoContext?.token || tokenInfo?.token || null,
+        tokenSource: todoContext?.source || tokenInfo?.source || null,
+        tokenCapturedAt: todoContext?.capturedAt || tokenInfo?.capturedAt || null,
+
+        // No PSS for To Do
+        pssToken: null,
+        pssProjectId: null,
+        hasPssAccess: false,
+
+        // Meta
+        url: window.location.href,
+        timestamp: Date.now()
+      };
+
+      console.log('[Planner Exporter] To Do context:', data);
+    } else {
+      // Handle Planner service (existing logic)
+      const planContext = extractPlanContext();
+      const planName = getPlanNameFromDom();
+
+      // Try to get or build the PSS project ID
+      let pssProjectId = pssContext?.projectId || null;
+      if (!pssProjectId && planContext?.planType === 'premium' && planContext?.planId) {
+        pssProjectId = buildPssProjectId(planContext.planId, planContext.orgId);
+      }
+
+      data = {
+        // Service type
+        serviceType: 'planner',
+
+        // Plan info
+        planId: planContext?.planId || null,
+        planType: planContext?.planType || null, // 'premium' or 'basic'
+        orgId: planContext?.orgId || null,
+        tenantId: planContext?.tenantId || null,
+        planName: planName,
+
+        // To Do fields (null for Planner)
+        listId: null,
+        listName: null,
+
+        // Graph API token info
+        token: tokenInfo?.token || null,
+        tokenSource: tokenInfo?.source || null,
+        tokenCapturedAt: tokenInfo?.capturedAt || null,
+
+        // PSS API info (Premium Plans)
+        pssToken: pssContext?.token || null,
+        pssProjectId: pssProjectId,
+        pssTokenCapturedAt: pssContext?.capturedAt || null,
+        hasPssAccess: !!(pssContext?.token && pssProjectId),
+
+        // Meta
+        url: window.location.href,
+        timestamp: Date.now()
+      };
+
+      console.log('[Planner Exporter] Context bridge data:', data);
+      console.log('[Planner Exporter] PSS fields - projectId:', pssProjectId, 'hasPssAccess:', !!(pssContext?.token && pssProjectId));
     }
 
-    const data = {
-      // Plan info
-      planId: planContext.planId,
-      planType: planContext.planType, // 'premium' or 'basic'
-      orgId: planContext.orgId,
-      tenantId: planContext.tenantId,
-      planName: planName,
-
-      // Graph API token info
-      token: tokenInfo?.token || null,
-      tokenSource: tokenInfo?.source || null,
-      tokenCapturedAt: tokenInfo?.capturedAt || null,
-
-      // PSS API info (Premium Plans)
-      pssToken: pssContext?.token || null,
-      pssProjectId: pssProjectId,
-      pssTokenCapturedAt: pssContext?.capturedAt || null,
-      hasPssAccess: !!(pssContext?.token && pssProjectId),
-
-      // Meta
-      url: window.location.href,
-      timestamp: Date.now()
-    };
-
-    console.log('[Planner Exporter] Context bridge data:', data);
-    console.log('[Planner Exporter] PSS fields - projectId:', pssProjectId, 'hasPssAccess:', !!(pssContext?.token && pssProjectId));
     bridge.setAttribute('data-planner-context', JSON.stringify(data));
 
     // Dispatch event for content script

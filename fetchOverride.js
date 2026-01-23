@@ -17,6 +17,11 @@
   window.__plannerPssTokenCapturedAt = null;
   window.__plannerPssProjectId = null;
 
+  // To Do API context
+  window.__todoListId = null;
+  window.__todoToken = null;
+  window.__todoTokenCapturedAt = null;
+
   const originalFetch = window.fetch;
 
   // Helper to extract auth header from various formats
@@ -63,6 +68,13 @@
   // Format: https://project.microsoft.com/orgXXX.crm3.dynamics.com/api/...
   function extractDynamicsOrg(url) {
     const match = url.match(/project\.microsoft\.com\/(org[a-f0-9]+\.crm\d*\.dynamics\.com)/i);
+    return match ? match[1] : null;
+  }
+
+  // Extract To Do list ID from Graph API URL
+  // Format: /me/todo/lists/{listId}/tasks
+  function extractToDoListId(url) {
+    const match = url.match(/\/me\/todo\/lists\/([^\/\?]+)/i);
     return match ? match[1] : null;
   }
 
@@ -139,6 +151,37 @@
           window.__plannerGraphToken = token;
           window.__plannerGraphTokenCapturedAt = Date.now();
 
+          // Check if this is a To Do API call
+          if (url.includes('/me/todo/')) {
+            window.__todoToken = token;
+            window.__todoTokenCapturedAt = Date.now();
+
+            const listId = extractToDoListId(url);
+            if (listId) {
+              window.__todoListId = listId;
+            }
+
+            // Notify via custom event for To Do
+            window.dispatchEvent(new CustomEvent('todo-token-captured', {
+              detail: {
+                token: token,
+                listId: listId,
+                timestamp: Date.now(),
+                url: url
+              }
+            }));
+
+            // Also post message for cross-context
+            window.postMessage({
+              type: 'TODO_TOKEN_CAPTURED',
+              token: token,
+              listId: listId,
+              timestamp: Date.now()
+            }, '*');
+
+            console.log('[Planner Exporter] To Do token captured for list:', listId);
+          }
+
           // Notify via custom event
           window.dispatchEvent(new CustomEvent('planner-token-captured', {
             detail: {
@@ -191,6 +234,17 @@
         if (this._plannerUrl.includes('graph.microsoft.com') || this._plannerUrl.includes('$batch')) {
           window.__plannerGraphToken = token;
           window.__plannerGraphTokenCapturedAt = Date.now();
+
+          // Check for To Do API
+          if (this._plannerUrl.includes('/me/todo/')) {
+            window.__todoToken = token;
+            window.__todoTokenCapturedAt = Date.now();
+
+            const listId = extractToDoListId(this._plannerUrl);
+            if (listId) {
+              window.__todoListId = listId;
+            }
+          }
         }
       }
     }

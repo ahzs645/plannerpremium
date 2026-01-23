@@ -1,6 +1,9 @@
 /**
  * Content Script for Planner Exporter
- * Supports both Premium Plans (DOM scraping) and Basic Plans (Graph API)
+ * Supports:
+ * - Premium Plans (DOM scraping + PSS API)
+ * - Basic Plans (Graph API)
+ * - Microsoft To Do (Graph API only)
  *
  * Extraction Modes:
  * - Quick: Fast grid-based extraction (basic task info only)
@@ -524,11 +527,30 @@
           metadata: { projectId: event.data.projectId, timestamp: event.data.timestamp }
         }).catch(() => {});
       }
+
+      // To Do API token captured - forward to background.js
+      if (event.data?.type === 'TODO_TOKEN_CAPTURED') {
+        if (plannerContext) {
+          plannerContext.token = event.data.token;
+          plannerContext.listId = event.data.listId;
+        }
+
+        // Store in background.js for centralized access
+        chrome.runtime.sendMessage({
+          action: 'storeToken',
+          type: 'TODO',
+          token: event.data.token,
+          metadata: { listId: event.data.listId, timestamp: event.data.timestamp }
+        }).catch(() => {});
+      }
     });
   }
 
   function getCurrentContext() {
     return {
+      // Service type
+      serviceType: plannerContext?.serviceType || 'planner',
+
       // Basic info
       token: plannerContext?.token || null,
       planId: plannerContext?.planId || null,
@@ -540,7 +562,12 @@
       // PSS API info (Premium Plans)
       pssToken: plannerContext?.pssToken || null,
       pssProjectId: plannerContext?.pssProjectId || null,
-      hasPssAccess: plannerContext?.hasPssAccess || false
+      hasPssAccess: plannerContext?.hasPssAccess || false,
+
+      // To Do info
+      listId: plannerContext?.listId || null,
+      listName: plannerContext?.listName || null,
+      hasList: !!plannerContext?.listId
     };
   }
 
@@ -562,6 +589,35 @@
   async function extractPlan(mode = 'quick', onProgress = null) {
     const context = getCurrentContext();
     console.log('[PlannerExporter] Extraction context:', context);
+
+    // Microsoft To Do - always use Graph API
+    if (context.serviceType === 'todo' && context.token) {
+      console.log('[PlannerExporter] To Do service - calling background.js for Graph API...');
+
+      try {
+        if (onProgress) {
+          onProgress({ status: 'fetching', message: 'Fetching via Graph API...' });
+        }
+
+        // Delegate to background.js service worker
+        const response = await chrome.runtime.sendMessage({
+          action: 'fetchToDoList',
+          listId: context.listId,
+          token: context.token
+        });
+
+        if (response.success) {
+          console.log('[PlannerExporter] To Do Graph API extraction successful');
+          return response.data;
+        } else {
+          throw new Error(response.error || 'To Do API failed');
+        }
+
+      } catch (apiError) {
+        console.error('[PlannerExporter] To Do API failed:', apiError.message);
+        throw apiError; // No DOM fallback for To Do
+      }
+    }
 
     // Premium Plan with PSS API access - try API via background.js
     if (context.planType === 'premium' && context.hasPssAccess) {
@@ -709,7 +765,14 @@
       const mode = request.mode || 'quick';
       const context = getCurrentContext();
 
-      if (!context.planId && context.planType !== 'premium') {
+      // Handle To Do service
+      if (context.serviceType === 'todo') {
+        if (!context.token) {
+          sendResponse({ success: false, error: 'No token detected. Please interact with the page first.' });
+          return true;
+        }
+        // For To Do, we don't require a listId - we can fetch all lists
+      } else if (!context.planId && context.planType !== 'premium') {
         // Try to detect plan anyway for premium
         if (!window.location.pathname.includes('plan')) {
           sendResponse({ success: false, error: 'No plan detected. Navigate to a plan first.' });
@@ -727,11 +790,15 @@
 
       extractPlan(mode, onProgress)
         .then(data => {
+          const isToDoService = context.serviceType === 'todo';
           const exportData = {
             ...data,
-            plan: data.plan || { id: context.planId, title: getPlanName() },
-            planName: getPlanName(),
-            planType: context.planType || 'premium',
+            serviceType: context.serviceType || 'planner',
+            plan: data.plan || (isToDoService
+              ? { id: context.listId, title: context.listName || 'To Do List' }
+              : { id: context.planId, title: getPlanName() }),
+            planName: isToDoService ? (context.listName || 'To Do List') : getPlanName(),
+            planType: isToDoService ? 'todo' : (context.planType || 'premium'),
             buckets: data.buckets || [],
             bucketMap: data.bucketMap || {},
             detailsMap: data.detailsMap || {},

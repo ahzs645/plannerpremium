@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Microsoft Planner Exporter",
   "version": "1.5",
-  "description": "Export tasks and plans from Microsoft Planner to JSON/CSV/Text. Add tasks directly from the extension.",
+  "description": "Export tasks from Microsoft Planner and Microsoft To Do to JSON/CSV/Text. Add tasks directly from the extension.",
   "permissions": [
     "activeTab",
     "storage",
@@ -13,6 +13,8 @@
     "https://graph.microsoft.com/*",
     "https://planner.cloud.microsoft/*",
     "https://tasks.office.com/*",
+    "https://to-do.office.com/*",
+    "https://substrate.office.com/*",
     "https://project.microsoft.com/*",
     "https://*.project.microsoft.com/*"
   ],
@@ -23,7 +25,8 @@
     {
       "matches": [
         "https://planner.cloud.microsoft/*",
-        "https://tasks.office.com/*"
+        "https://tasks.office.com/*",
+        "https://to-do.office.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_start",

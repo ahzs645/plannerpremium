@@ -58,7 +58,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   function renderData() {
     // Header info with source indicator
     const sourceLabel = exportData.source === 'dom' ? ' (DOM)' : '';
-    const planTypeLabel = exportData.planType === 'premium' ? ' [Premium]' : ' [Basic]';
+    let planTypeLabel = '';
+    if (exportData.serviceType === 'todo' || exportData.planType === 'todo') {
+      planTypeLabel = ' [To Do]';
+    } else if (exportData.planType === 'premium') {
+      planTypeLabel = ' [Premium]';
+    } else {
+      planTypeLabel = ' [Basic]';
+    }
     planNameEl.textContent = (exportData.planName || exportData.plan?.title || 'Unknown Plan') + planTypeLabel;
     exportDateEl.textContent = `Exported: ${formatDate(exportData.exportedAt)}${sourceLabel}`;
 
@@ -88,8 +95,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       buckets = Array.from(bucketNames).map((name, i) => ({ id: `bucket-${i}`, name }));
     }
 
-    // Populate bucket filter
-    filterBucketEl.innerHTML = '<option value="">All Buckets</option>';
+    // Populate bucket/list filter
+    const isToDoService = exportData.serviceType === 'todo' || exportData.planType === 'todo';
+    filterBucketEl.innerHTML = `<option value="">${isToDoService ? 'All Lists' : 'All Buckets'}</option>`;
     for (const bucket of buckets) {
       const option = document.createElement('option');
       option.value = bucket.name; // Use name for filtering (works for both types)
@@ -179,6 +187,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    const isToDoData = exportData.serviceType === 'todo' || exportData.planType === 'todo';
+
     tasksListEl.innerHTML = tasks.map(task => {
       const status = getTaskStatus(task);
       const statusLabel = getStatusLabel(status);
@@ -202,21 +212,25 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       let checklistHtml = '';
-      if (details?.checklist) {
-        const checklistItems = Object.values(details.checklist);
-        if (checklistItems.length > 0) {
-          checklistHtml = `
-            <div class="task-checklist">
-              <h4>Checklist (${checklistItems.filter(c => c.isChecked).length}/${checklistItems.length})</h4>
-              ${checklistItems.map(item => `
-                <div class="checklist-item ${item.isChecked ? 'completed' : ''}">
-                  ${item.isChecked ? '&#9745;' : '&#9744;'} ${escapeHtml(item.title)}
-                </div>
-              `).join('')}
-            </div>
-          `;
-        }
+      // Handle checklists from both detailsMap (Planner) and directly on task (To Do)
+      const checklistItems = details?.checklist
+        ? Object.values(details.checklist)
+        : (task.checklist || []);
+      if (checklistItems.length > 0) {
+        checklistHtml = `
+          <div class="task-checklist">
+            <h4>Checklist (${checklistItems.filter(c => c.isChecked).length}/${checklistItems.length})</h4>
+            ${checklistItems.map(item => `
+              <div class="checklist-item ${item.isChecked ? 'completed' : ''}">
+                ${item.isChecked ? '&#9745;' : '&#9744;'} ${escapeHtml(item.title)}
+              </div>
+            `).join('')}
+          </div>
+        `;
       }
+
+      // Get description from detailsMap or directly from task
+      const description = details?.description || task.description || '';
 
       return `
         <div class="task-card">
@@ -229,7 +243,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           </div>
           <div class="task-meta">
             <div class="task-meta-item">
-              <strong>Bucket:</strong> ${escapeHtml(bucketName)}
+              <strong>${isToDoData ? 'List' : 'Bucket'}:</strong> ${escapeHtml(bucketName)}
             </div>
             ${task.startDateTime ? `
               <div class="task-meta-item">
@@ -244,8 +258,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             ${durationHtml}
             ${assignedHtml}
           </div>
-          ${details?.description ? `
-            <div class="task-description">${escapeHtml(details.description)}</div>
+          ${description ? `
+            <div class="task-description">${escapeHtml(description)}</div>
           ` : ''}
           ${checklistHtml}
         </div>
@@ -346,6 +360,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const rows = tasks.map(task => {
       const details = exportData.detailsMap?.[task.id];
       const bucketName = getBucketName(task);
+      const description = details?.description || task.description || '';
 
       // Handle assigned to
       let assignedTo = '';
@@ -366,7 +381,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         task.duration || '',
         getPercentComplete(task),
         csvEscape(assignedTo),
-        csvEscape(details?.description || '')
+        csvEscape(description)
       ];
     });
 
@@ -378,11 +393,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   function exportToText() {
     const plan = exportData.plan || {};
     const tasks = exportData.tasks || [];
+    const isToDoData = exportData.serviceType === 'todo' || exportData.planType === 'todo';
 
-    let text = `PLANNER EXPORT\n`;
+    let text = isToDoData ? `TO DO EXPORT\n` : `PLANNER EXPORT\n`;
     text += `==============\n\n`;
-    text += `Plan: ${plan.title || exportData.planName || 'Unknown'}\n`;
-    text += `Type: ${exportData.planType === 'premium' ? 'Premium (Project for the Web)' : 'Basic (Standard Planner)'}\n`;
+    text += `${isToDoData ? 'List' : 'Plan'}: ${plan.title || exportData.planName || 'Unknown'}\n`;
+
+    let typeLabel;
+    if (isToDoData) {
+      typeLabel = 'Microsoft To Do';
+    } else if (exportData.planType === 'premium') {
+      typeLabel = 'Premium (Project for the Web)';
+    } else {
+      typeLabel = 'Basic (Standard Planner)';
+    }
+    text += `Type: ${typeLabel}\n`;
     text += `Source: ${exportData.source === 'dom' ? 'DOM Scraping' : 'Graph API'}\n`;
     text += `Exported: ${formatDate(exportData.exportedAt)}\n`;
     text += `Total Tasks: ${tasks.length}\n\n`;
@@ -399,11 +424,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     for (const [bucketName, bucketTasks] of bucketGroups) {
       text += `\n${'='.repeat(50)}\n`;
-      text += `BUCKET: ${bucketName}\n`;
+      text += `${isToDoData ? 'LIST' : 'BUCKET'}: ${bucketName}\n`;
       text += `${'='.repeat(50)}\n\n`;
 
       for (const task of bucketTasks) {
         const details = exportData.detailsMap?.[task.id];
+        const description = details?.description || task.description || '';
         const status = getStatusLabel(getTaskStatus(task));
         const priority = getPriorityLabel(task.priority);
         const pct = getPercentComplete(task);
@@ -414,16 +440,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (task.dueDateTime) text += `  Due: ${formatDateSafe(task.dueDateTime)}\n`;
         if (task.duration) text += `  Duration: ${task.duration}\n`;
         if (task.assignedTo?.length) text += `  Assigned: ${task.assignedTo.join(', ')}\n`;
-        if (details?.description) text += `  Description: ${details.description}\n`;
+        if (description) text += `  Description: ${description}\n`;
 
-        // Checklist
-        if (details?.checklist) {
-          const items = Object.values(details.checklist);
-          if (items.length > 0) {
-            text += `  Checklist:\n`;
-            for (const item of items) {
-              text += `    [${item.isChecked ? 'x' : ' '}] ${item.title}\n`;
-            }
+        // Checklist (from detailsMap or directly on task)
+        const checklistItems = details?.checklist
+          ? Object.values(details.checklist)
+          : (task.checklist || []);
+        if (checklistItems.length > 0) {
+          text += `  Checklist:\n`;
+          for (const item of checklistItems) {
+            text += `    [${item.isChecked ? 'x' : ' '}] ${item.title}\n`;
           }
         }
         text += '\n';
@@ -435,12 +461,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Prepare export data
   function prepareExportData() {
+    const isToDoData = exportData.serviceType === 'todo' || exportData.planType === 'todo';
+
     const tasks = (exportData.tasks || []).map(task => {
       const details = exportData.detailsMap?.[task.id];
+      const checklistItems = details?.checklist
+        ? Object.values(details.checklist)
+        : (task.checklist || []);
+
       return {
         id: task.id,
         title: task.title,
         bucket: getBucketName(task),
+        list: isToDoData ? getBucketName(task) : null,
         status: getStatusLabel(getTaskStatus(task)),
         percentComplete: getPercentComplete(task),
         priority: getPriorityLabel(task.priority),
@@ -449,16 +482,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         dueDateTime: task.dueDateTime,
         duration: task.duration || null,
         assignedTo: task.assignedTo || (task.assignments ? Object.keys(task.assignments) : []),
-        description: details?.description || null,
-        checklist: details?.checklist ? Object.values(details.checklist).map(c => ({
+        description: details?.description || task.description || null,
+        checklist: checklistItems.map(c => ({
           title: c.title,
           isChecked: c.isChecked
-        })) : [],
+        })),
         source: task.source || 'api'
       };
     });
 
     return {
+      serviceType: exportData.serviceType || 'planner',
       plan: {
         id: exportData.plan?.id,
         title: exportData.plan?.title || exportData.planName,
@@ -468,6 +502,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         id: b.id,
         name: b.name
       })),
+      lists: isToDoData ? (exportData.buckets || []).map(b => ({
+        id: b.id,
+        name: b.name
+      })) : null,
       tasks: tasks,
       exportedAt: exportData.exportedAt,
       source: exportData.source,
