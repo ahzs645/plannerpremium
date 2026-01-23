@@ -616,26 +616,81 @@ function mapToDoImportance(importance) {
   return importanceMap[normalizedImportance] || { value: 5, label: 'Medium' };
 }
 
-// Substrate API fetch wrapper
-async function substrateFetch(endpoint, token) {
+// Get fresh To Do token from storage
+async function getFreshToDoToken() {
+  const data = await chrome.storage.local.get(['todoSubstrateToken', 'todoSubstrateTokenTimestamp']);
+  if (data.todoSubstrateToken) {
+    const tokenAge = Date.now() - (data.todoSubstrateTokenTimestamp || 0);
+    const ONE_HOUR = 60 * 60 * 1000;
+    if (tokenAge < ONE_HOUR) {
+      console.log('[Background] Using stored To Do token (age:', Math.round(tokenAge / 1000), 'seconds)');
+      return data.todoSubstrateToken;
+    }
+    console.log('[Background] Stored token is too old:', Math.round(tokenAge / 1000), 'seconds');
+  }
+  return null;
+}
+
+// Substrate API fetch wrapper with retry logic
+async function substrateFetch(endpoint, token, maxRetries = 3) {
   const url = endpoint.startsWith('http') ? endpoint : `${TODO_SUBSTRATE_API}${endpoint}`;
   console.log('[Background] Substrate fetch:', url);
 
-  const response = await fetch(url, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json'
-    }
-  });
+  let currentToken = token;
+  let lastError = null;
 
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => '');
-    console.error('[Background] Substrate API error:', response.status, errorText);
-    throw new Error(`Substrate API error: ${response.status} ${response.statusText}`);
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${currentToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }
+      });
+
+      if (response.status === 401) {
+        console.log(`[Background] 401 Unauthorized, attempt ${attempt + 1}/${maxRetries}`);
+
+        // Try to get a fresh token from storage
+        const freshToken = await getFreshToDoToken();
+        if (freshToken && freshToken !== currentToken) {
+          console.log('[Background] Got fresh token from storage, retrying...');
+          currentToken = freshToken;
+          // Wait a bit before retrying
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          continue;
+        }
+
+        // If no fresh token, wait longer and retry (token might be captured soon)
+        if (attempt < maxRetries - 1) {
+          console.log('[Background] Waiting for token capture...');
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          const newerToken = await getFreshToDoToken();
+          if (newerToken) {
+            currentToken = newerToken;
+          }
+          continue;
+        }
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        console.error('[Background] Substrate API error:', response.status, errorText);
+        throw new Error(`Substrate API error: ${response.status} ${response.statusText}`);
+      }
+
+      return response.json();
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries - 1) {
+        console.log(`[Background] Fetch error, retrying: ${err.message}`);
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
   }
 
-  return response.json();
+  throw lastError || new Error('Max retries exceeded');
 }
 
 async function fetchToDoListData(listId, listName, token, tabId) {
@@ -973,38 +1028,57 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Fetch To Do list data via Substrate API
   if (request.action === 'fetchToDoList') {
-    const { listId, listName, token } = request;
+    const { listId, listName } = request;
+    let { token } = request;
     const targetTabId = request.tabId || tabId;
 
-    // Update state to extracting
-    updateExtractionState({
-      status: 'extracting',
-      startedAt: Date.now(),
-      error: null,
-      method: 'todo-substrate-api',
-      progress: { status: 'fetching', message: `Fetching "${listName || 'To Do'}" list...` }
-    });
+    // Try to get fresh token from storage if not provided or seems stale
+    (async () => {
+      if (!token) {
+        console.log('[Background] No token provided, checking storage...');
+        token = await getFreshToDoToken();
+      }
 
-    fetchToDoListData(listId, listName, token, targetTabId)
-      .then(data => {
-        const listTitle = data.plan?.title || listName || 'To Do';
-        updateExtractionState({
-          status: 'complete',
-          completedAt: Date.now(),
-          taskCount: data.tasks?.length || 0,
-          progress: { status: 'complete', message: `Extracted ${data.tasks?.length || 0} tasks from "${listTitle}"` }
-        });
-        sendResponse({ success: true, data });
-      })
-      .catch(err => {
-        console.error('[Background] fetchToDoList error:', err);
+      if (!token) {
         updateExtractionState({
           status: 'error',
-          error: err.message,
+          error: 'No token available. Please interact with To Do page first.',
           completedAt: Date.now()
         });
-        sendResponse({ success: false, error: err.message });
+        sendResponse({ success: false, error: 'No token available. Please interact with the To Do page (scroll, click) to capture authentication.' });
+        return;
+      }
+
+      // Update state to extracting
+      updateExtractionState({
+        status: 'extracting',
+        startedAt: Date.now(),
+        error: null,
+        method: 'todo-substrate-api',
+        progress: { status: 'fetching', message: `Fetching "${listName || 'To Do'}" list...` }
       });
+
+      fetchToDoListData(listId, listName, token, targetTabId)
+        .then(data => {
+          const listTitle = data.plan?.title || listName || 'To Do';
+          updateExtractionState({
+            status: 'complete',
+            completedAt: Date.now(),
+            taskCount: data.tasks?.length || 0,
+            progress: { status: 'complete', message: `Extracted ${data.tasks?.length || 0} tasks from "${listTitle}"` }
+          });
+          sendResponse({ success: true, data });
+        })
+        .catch(err => {
+          console.error('[Background] fetchToDoList error:', err);
+          updateExtractionState({
+            status: 'error',
+            error: err.message,
+            completedAt: Date.now()
+          });
+          sendResponse({ success: false, error: err.message });
+        });
+    })();
     return true;
   }
 

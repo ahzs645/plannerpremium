@@ -173,8 +173,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       tokenStatusEl.textContent = 'Found';
       tokenStatusEl.className = 'value success';
     } else {
-      tokenStatusEl.textContent = 'Not found - interact with page';
-      tokenStatusEl.className = 'value error';
+      // For To Do, give more specific instructions
+      if (isToDoService) {
+        tokenStatusEl.textContent = 'Not found - scroll or click in the list';
+        tokenStatusEl.className = 'value warning';
+      } else {
+        tokenStatusEl.textContent = 'Not found - interact with page';
+        tokenStatusEl.className = 'value error';
+      }
     }
 
     // Show API access status

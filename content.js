@@ -528,20 +528,28 @@
         }).catch(() => {});
       }
 
-      // To Do API token captured - forward to background.js
+      // To Do API token captured - forward to background.js and store in chrome.storage
       if (event.data?.type === 'TODO_TOKEN_CAPTURED') {
         if (plannerContext) {
           plannerContext.token = event.data.token;
           plannerContext.listId = event.data.listId;
         }
 
-        // Store in background.js for centralized access
+        // Store directly in chrome.storage for immediate access
+        chrome.storage.local.set({
+          todoSubstrateToken: event.data.token,
+          todoSubstrateTokenTimestamp: event.data.timestamp || Date.now()
+        }).catch(() => {});
+
+        // Also store in background.js for centralized access
         chrome.runtime.sendMessage({
           action: 'storeToken',
           type: 'TODO',
           token: event.data.token,
           metadata: { listId: event.data.listId, timestamp: event.data.timestamp }
         }).catch(() => {});
+
+        console.log('[PlannerExporter] To Do Substrate token stored');
       }
     });
   }
