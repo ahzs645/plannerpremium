@@ -557,6 +557,140 @@ header h1 {
   border-top: 1px solid #edebe9;
 }
 
+/* Service Selection */
+.service-selection {
+  background: #fff;
+  border-radius: 8px;
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.service-selection h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: #323130;
+}
+
+.service-options {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.service-option {
+  cursor: pointer;
+}
+
+.service-option input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.service-card {
+  padding: 20px;
+  border: 2px solid #edebe9;
+  border-radius: 8px;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.service-option input:checked + .service-card {
+  border-color: #0078d4;
+  background: #f3f9fd;
+}
+
+.service-card:hover {
+  border-color: #c8c6c4;
+}
+
+.service-option input:checked + .service-card:hover {
+  border-color: #0078d4;
+}
+
+.service-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.service-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #323130;
+  margin-bottom: 4px;
+}
+
+.service-desc {
+  font-size: 12px;
+  color: #605e5c;
+}
+
+.service-status {
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.service-status:empty {
+  display: none;
+}
+
+.service-status.success {
+  background: #dff6dd;
+  color: #107c10;
+}
+
+.service-status.error {
+  background: #fde7e9;
+  color: #d13438;
+}
+
+.service-status.info {
+  background: #e1f5fe;
+  color: #0078d4;
+}
+
+/* To Do List Selection */
+.list-selection {
+  margin-bottom: 24px;
+}
+
+.list-selection.hidden {
+  display: none;
+}
+
+.todo-list-select {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #8a8886;
+  border-radius: 4px;
+  font-size: 14px;
+  background: #fff;
+}
+
+.todo-list-select:focus {
+  outline: none;
+  border-color: #0078d4;
+}
+
+/* Upload info variants */
+.upload-info.hidden {
+  display: none;
+}
+
+.upload-info .note {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #fff4ce;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #797673;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .preview-summary {
@@ -574,5 +708,9 @@ header h1 {
 
   .mapping-arrow {
     display: none;
+  }
+
+  .service-options {
+    grid-template-columns: 1fr;
   }
 }

@@ -10,8 +10,32 @@
   <div class="container">
     <header>
       <h1>Import Tasks from CSV</h1>
-      <p class="header-subtitle">Create tasks in Microsoft Planner from a CSV file</p>
+      <p class="header-subtitle" id="header-subtitle">Create tasks in Microsoft Planner or To Do from a CSV file</p>
     </header>
+
+    <!-- Service Selection -->
+    <section id="service-selection" class="service-selection">
+      <h2>Select Destination</h2>
+      <div class="service-options">
+        <label class="service-option">
+          <input type="radio" name="service-type" value="planner" checked>
+          <div class="service-card">
+            <div class="service-icon">📋</div>
+            <div class="service-name">Planner Premium</div>
+            <div class="service-desc">Import with hierarchy (subtasks)</div>
+          </div>
+        </label>
+        <label class="service-option">
+          <input type="radio" name="service-type" value="todo">
+          <div class="service-card">
+            <div class="service-icon">✅</div>
+            <div class="service-name">Microsoft To Do</div>
+            <div class="service-desc">Simple flat task list</div>
+          </div>
+        </label>
+      </div>
+      <div id="service-status" class="service-status"></div>
+    </section>
 
     <!-- Step 1: Upload -->
     <section id="step-upload" class="step active">
@@ -23,8 +47,8 @@
         <input type="file" id="file-input" accept=".csv" hidden>
         <button class="btn btn-primary" id="btn-browse">Browse Files</button>
       </div>
-      <div class="upload-info">
-        <h3>CSV Format</h3>
+      <div class="upload-info" id="upload-info-planner">
+        <h3>CSV Format (Planner Premium)</h3>
         <p>Your CSV should have these columns:</p>
         <code>OutlineNumber,Title,Bucket,Priority,StartDate,DueDate,AssignedTo,Description,ChecklistItems</code>
         <ul>
@@ -38,6 +62,20 @@
           <li><strong>ChecklistItems</strong>: Checklist items, semicolon-separated</li>
         </ul>
         <button class="btn btn-secondary btn-small" id="btn-download-template">Download Template CSV</button>
+      </div>
+      <div class="upload-info hidden" id="upload-info-todo">
+        <h3>CSV Format (Microsoft To Do)</h3>
+        <p>Your CSV should have these columns:</p>
+        <code>Title,Priority,DueDate,Description,ChecklistItems</code>
+        <ul>
+          <li><strong>Title</strong> (required): Task name</li>
+          <li><strong>Priority</strong>: High, Normal (default), or Low</li>
+          <li><strong>DueDate</strong>: Date in ISO or MM/DD/YYYY format</li>
+          <li><strong>Description</strong>: Task notes</li>
+          <li><strong>ChecklistItems</strong>: Checklist items, semicolon-separated</li>
+        </ul>
+        <p class="note">Note: To Do does not support hierarchy (subtasks) or assignments.</p>
+        <button class="btn btn-secondary btn-small" id="btn-download-todo-template">Download To Do Template</button>
       </div>
     </section>
 
@@ -73,6 +111,14 @@
         <h3>Bucket Mapping</h3>
         <p class="mapping-description">Map CSV buckets to existing plan buckets or skip them:</p>
         <div id="bucket-map-list" class="mapping-list"></div>
+      </div>
+
+      <div class="list-selection hidden" id="list-selection">
+        <h3>Select To Do List</h3>
+        <p class="mapping-description">Choose which list to import tasks into:</p>
+        <select id="todo-list-select" class="todo-list-select">
+          <option value="">Loading lists...</option>
+        </select>
       </div>
 
       <div class="preview-table-container">
@@ -154,7 +200,7 @@
 
       <div class="step-actions">
         <button class="btn btn-secondary" id="btn-import-another">Import Another CSV</button>
-        <button class="btn btn-primary" id="btn-view-planner">View in Planner</button>
+        <button class="btn btn-primary" id="btn-view-destination">View in Planner</button>
       </div>
     </section>
   </div>

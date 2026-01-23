@@ -828,8 +828,9 @@ async function fetchToDoListData(listId, listName, token, tabId) {
     const priority = mapToDoImportance(importance);
     const percentComplete = mapToDoStatus(status);
 
-    // Checklist items - Substrate may use Checklist or ChecklistItems
-    const checklistItems = task.Checklist || task.ChecklistItems || task.checklist || task.checklistItems || [];
+    // Checklist items - Substrate uses Subtasks (not Checklist)
+    const checklistItems = task.Subtasks || task.SubTasks || task.Checklist || task.ChecklistItems ||
+                           task.subtasks || task.checklist || task.checklistItems || [];
 
     return {
       id: taskId,
@@ -852,11 +853,12 @@ async function fetchToDoListData(listId, listName, token, tabId) {
       assignedTo: [],
       assignments: [],
 
-      // Checklist items - Substrate uses PascalCase
+      // Checklist items (Subtasks) - Substrate uses Subject and IsCompleted
       checklist: (Array.isArray(checklistItems) ? checklistItems : []).map(item => ({
         id: item.Id || item.id,
-        title: item.DisplayName || item.Name || item.Title || item.displayName || item.name || item.title || '',
-        isChecked: item.IsChecked || item.Checked || item.isChecked || item.checked || false
+        title: item.Subject || item.DisplayName || item.Name || item.Title || item.subject || item.displayName || item.name || item.title || '',
+        isChecked: item.IsCompleted || item.IsChecked || item.Completed || item.Checked ||
+                   item.isCompleted || item.isChecked || item.completed || item.checked || false
       })),
 
       // To Do specific fields - Substrate uses PascalCase
@@ -910,6 +912,177 @@ async function fetchToDoListData(listId, listName, token, tabId) {
     extractionMethod: 'substrate-api',
     extractedAt: new Date().toISOString()
   };
+}
+
+// ============================================
+// TO DO API - CREATE TASKS (Substrate API)
+// ============================================
+
+// Map priority to To Do Importance
+function mapPriorityToImportance(priority) {
+  if (typeof priority === 'number') {
+    if (priority <= 1) return 'High';
+    if (priority >= 9) return 'Low';
+    return 'Normal';
+  }
+  if (typeof priority === 'string') {
+    const p = priority.toLowerCase();
+    if (p === 'urgent' || p === 'high' || p === 'important') return 'High';
+    if (p === 'low') return 'Low';
+  }
+  return 'Normal';
+}
+
+// Create a task in To Do
+async function createToDoTask(token, listId, taskData) {
+  console.log('[Background] Creating To Do task in list:', listId);
+
+  const payload = {
+    Subject: taskData.title || taskData.Subject || 'Untitled Task',
+    Importance: mapPriorityToImportance(taskData.priority || taskData.importance),
+    Status: taskData.status || 'NotStarted'
+  };
+
+  // Add body/notes if provided
+  if (taskData.notes || taskData.description || taskData.body) {
+    payload.Body = {
+      Content: taskData.notes || taskData.description || taskData.body,
+      ContentType: 'Text'
+    };
+  }
+
+  // Add due date if provided
+  if (taskData.dueDate || taskData.dueDateTime) {
+    const dueDate = taskData.dueDate || taskData.dueDateTime;
+    payload.DueDate = {
+      DateTime: typeof dueDate === 'string' ? dueDate : new Date(dueDate).toISOString(),
+      TimeZone: 'UTC'
+    };
+  }
+
+  // Add start date if provided
+  if (taskData.startDate || taskData.startDateTime) {
+    const startDate = taskData.startDate || taskData.startDateTime;
+    payload.StartDate = {
+      DateTime: typeof startDate === 'string' ? startDate : new Date(startDate).toISOString(),
+      TimeZone: 'UTC'
+    };
+  }
+
+  const response = await fetch(
+    `${TODO_SUBSTRATE_API}/taskfolders/${listId}/tasks`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error('[Background] Create task error:', response.status, errorText);
+    throw new Error(`Failed to create task: ${response.status} ${response.statusText}`);
+  }
+
+  return await response.json();
+}
+
+// Add a checklist item (subtask) to a task
+async function addToDoChecklistItem(token, taskId, stepText, isCompleted = false) {
+  console.log('[Background] Adding checklist item to task:', taskId);
+
+  const response = await fetch(
+    `${TODO_SUBSTRATE_API}/tasks/${taskId}/subtasks`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        Subject: stepText,
+        IsCompleted: isCompleted
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error('[Background] Add checklist item error:', response.status, errorText);
+    throw new Error(`Failed to add checklist item: ${response.status} ${response.statusText}`);
+  }
+
+  return await response.json();
+}
+
+// Import multiple tasks to To Do
+async function importTasksToToDo(token, listId, tasks, tabId) {
+  console.log('[Background] Importing', tasks.length, 'tasks to To Do list:', listId);
+
+  const results = {
+    success: [],
+    failed: []
+  };
+
+  for (let i = 0; i < tasks.length; i++) {
+    const taskData = tasks[i];
+
+    sendProgressToTab(tabId, {
+      status: 'importing',
+      message: `Creating task ${i + 1} of ${tasks.length}...`,
+      total: tasks.length,
+      current: i
+    });
+
+    try {
+      // Create the main task
+      const createdTask = await createToDoTask(token, listId, taskData);
+      const taskId = createdTask.Id || createdTask.id;
+
+      // Add checklist items if any
+      if (taskData.checklist && Array.isArray(taskData.checklist)) {
+        for (const item of taskData.checklist) {
+          const itemText = item.title || item.Subject || item.text || item;
+          const isChecked = item.isChecked || item.IsCompleted || item.checked || false;
+          try {
+            await addToDoChecklistItem(token, taskId, itemText, isChecked);
+          } catch (err) {
+            console.warn('[Background] Failed to add checklist item:', err.message);
+          }
+        }
+      }
+
+      results.success.push({
+        original: taskData,
+        created: createdTask
+      });
+    } catch (err) {
+      console.error('[Background] Failed to create task:', taskData.title, err.message);
+      results.failed.push({
+        task: taskData,
+        error: err.message
+      });
+    }
+
+    // Small delay to avoid rate limiting
+    if (i < tasks.length - 1) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  sendProgressToTab(tabId, {
+    status: 'complete',
+    message: `Imported ${results.success.length} tasks (${results.failed.length} failed)`,
+    total: tasks.length,
+    current: tasks.length
+  });
+
+  return results;
 }
 
 // ============================================
@@ -1083,6 +1256,83 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // Create a single To Do task
+  if (request.action === 'createToDoTask') {
+    const { listId, taskData } = request;
+    let { token } = request;
+
+    (async () => {
+      // Get token from storage if not provided
+      if (!token) {
+        token = await getFreshToDoToken();
+      }
+      if (!token) {
+        sendResponse({ success: false, error: 'No token available' });
+        return;
+      }
+
+      try {
+        const createdTask = await createToDoTask(token, listId, taskData);
+        sendResponse({ success: true, data: createdTask });
+      } catch (err) {
+        console.error('[Background] createToDoTask error:', err);
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  // Add checklist item to a To Do task
+  if (request.action === 'addToDoChecklistItem') {
+    const { taskId, text, isCompleted } = request;
+    let { token } = request;
+
+    (async () => {
+      if (!token) {
+        token = await getFreshToDoToken();
+      }
+      if (!token) {
+        sendResponse({ success: false, error: 'No token available' });
+        return;
+      }
+
+      try {
+        const item = await addToDoChecklistItem(token, taskId, text, isCompleted || false);
+        sendResponse({ success: true, data: item });
+      } catch (err) {
+        console.error('[Background] addToDoChecklistItem error:', err);
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  // Import multiple tasks to To Do
+  if (request.action === 'importTasksToToDo') {
+    const { listId, tasks } = request;
+    let { token } = request;
+    const targetTabId = request.tabId || tabId;
+
+    (async () => {
+      if (!token) {
+        token = await getFreshToDoToken();
+      }
+      if (!token) {
+        sendResponse({ success: false, error: 'No token available' });
+        return;
+      }
+
+      try {
+        const results = await importTasksToToDo(token, listId, tasks, targetTabId);
+        sendResponse({ success: true, data: results });
+      } catch (err) {
+        console.error('[Background] importTasksToToDo error:', err);
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
   // Fetch premium plan data via PSS API
   if (request.action === 'fetchPremiumPlan') {
     const { projectId, token } = request;
@@ -1122,6 +1372,49 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // ============================================
   // IMPORT HANDLERS
   // ============================================
+
+  // Get To Do import session (list of task lists)
+  if (request.action === 'getToDoImportSession') {
+    (async () => {
+      try {
+        // Get stored To Do token
+        let token = await getFreshToDoToken();
+
+        if (!token) {
+          sendResponse({
+            success: false,
+            error: 'No To Do token found. Please navigate to Microsoft To Do and interact with the page first.'
+          });
+          return;
+        }
+
+        // Fetch all task folders (lists)
+        const listsData = await substrateFetch('/taskfolders?maxPageSize=200', token);
+        const lists = listsData.Value || listsData.value || [];
+
+        console.log('[Background] getToDoImportSession: Found', lists.length, 'lists');
+
+        sendResponse({
+          success: true,
+          data: {
+            serviceType: 'todo',
+            token: token,
+            lists: lists.map(l => ({
+              id: l.Id || l.id,
+              name: l.Name || l.DisplayName || l.name || l.displayName || 'Unknown',
+              isShared: l.IsShared || l.isShared || false,
+              wellknownListName: l.WellknownListName || l.wellknownListName
+            })),
+            todoUrl: 'https://to-do.office.com'
+          }
+        });
+      } catch (error) {
+        console.error('[Background] getToDoImportSession error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
 
   // Get import session with existing buckets and resources
   if (request.action === 'getImportSession') {

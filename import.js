@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const fileInput = document.getElementById('file-input');
   const btnBrowse = document.getElementById('btn-browse');
   const btnDownloadTemplate = document.getElementById('btn-download-template');
+  const btnDownloadToDoTemplate = document.getElementById('btn-download-todo-template');
 
   const previewSummary = document.getElementById('preview-summary');
   const validationErrors = document.getElementById('validation-errors');
@@ -40,7 +41,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const failedTasks = document.getElementById('failed-tasks');
   const failedList = document.getElementById('failed-list');
   const btnImportAnother = document.getElementById('btn-import-another');
-  const btnViewPlanner = document.getElementById('btn-view-planner');
+  const btnViewDestination = document.getElementById('btn-view-destination');
+
+  // Service selection elements
+  const serviceStatusEl = document.getElementById('service-status');
+  const uploadInfoPlanner = document.getElementById('upload-info-planner');
+  const uploadInfoToDo = document.getElementById('upload-info-todo');
+  const bucketMappingSection = document.getElementById('bucket-mapping');
+  const listSelectionSection = document.getElementById('list-selection');
+  const todoListSelect = document.getElementById('todo-list-select');
 
   // State
   let parsedTasks = [];
@@ -49,10 +58,13 @@ document.addEventListener('DOMContentLoaded', () => {
   let bucketMapping = {}; // CSV bucket name -> existing bucket ID or null
   let importSession = null;
   let importCancelled = false;
-  let plannerUrl = '';
+  let destinationUrl = '';
+  let serviceType = 'planner'; // 'planner' or 'todo'
+  let todoLists = []; // Available To Do lists
+  let selectedListId = null; // Selected To Do list for import
 
-  // CSV Template
-  const CSV_TEMPLATE = `OutlineNumber,Title,Bucket,Priority,StartDate,DueDate,AssignedTo,Description,ChecklistItems
+  // CSV Template for Planner Premium
+  const CSV_TEMPLATE_PLANNER = `OutlineNumber,Title,Bucket,Priority,StartDate,DueDate,AssignedTo,Description,ChecklistItems
 1,Phase 1: Planning,Backlog,High,2025-01-20,2025-01-31,,Project planning phase,
 1.1,Define requirements,Backlog,High,2025-01-20,2025-01-22,pm@company.com,Gather requirements from stakeholders,Interview stakeholders;Document requirements;Review with team
 1.2,Create project timeline,Backlog,Medium,2025-01-23,2025-01-25,pm@company.com,Build project schedule,
@@ -60,6 +72,14 @@ document.addEventListener('DOMContentLoaded', () => {
 2.1,Setup development environment,Sprint 1,Urgent,2025-02-01,2025-02-03,dev@company.com,Configure dev environment,Install tools;Configure CI/CD
 2.1.1,Install dependencies,Sprint 1,Medium,2025-02-01,2025-02-02,dev@company.com,Install required packages,
 2.2,Implement core features,Sprint 1,High,2025-02-04,2025-02-20,dev@company.com;dev2@company.com,Build main functionality,`;
+
+  // CSV Template for To Do
+  const CSV_TEMPLATE_TODO = `Title,Priority,DueDate,Description,ChecklistItems
+Buy groceries,High,2025-01-25,Weekly shopping,Milk;Bread;Eggs;Butter
+Call dentist,Normal,2025-01-26,Schedule appointment,
+Finish report,High,2025-01-24,Q4 quarterly report,Review data;Write summary;Add charts
+Plan weekend trip,Low,2025-02-01,Research destinations,Check flights;Book hotel;Plan activities
+Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool down`;
 
   // Initialize
   init();
@@ -70,13 +90,25 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setupEventListeners() {
+    // Service selection
+    document.querySelectorAll('input[name="service-type"]').forEach(radio => {
+      radio.addEventListener('change', handleServiceChange);
+    });
+
     // Upload zone
     btnBrowse.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', handleFileSelect);
     uploadZone.addEventListener('dragover', handleDragOver);
     uploadZone.addEventListener('dragleave', handleDragLeave);
     uploadZone.addEventListener('drop', handleDrop);
-    btnDownloadTemplate.addEventListener('click', downloadTemplate);
+    btnDownloadTemplate.addEventListener('click', () => downloadTemplate('planner'));
+    btnDownloadToDoTemplate.addEventListener('click', () => downloadTemplate('todo'));
+
+    // To Do list selection
+    todoListSelect.addEventListener('change', () => {
+      selectedListId = todoListSelect.value;
+      updateImportButton();
+    });
 
     // Preview
     btnViewTable.addEventListener('click', () => setPreviewView('table'));
@@ -89,31 +121,94 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Results
     btnImportAnother.addEventListener('click', resetImport);
-    btnViewPlanner.addEventListener('click', () => {
-      if (plannerUrl) window.open(plannerUrl, '_blank');
+    btnViewDestination.addEventListener('click', () => {
+      if (destinationUrl) window.open(destinationUrl, '_blank');
     });
   }
 
+  // Handle service type change
+  function handleServiceChange(e) {
+    serviceType = e.target.value;
+    console.log('[Import] Service type changed to:', serviceType);
+
+    // Update UI based on service type
+    if (serviceType === 'todo') {
+      uploadInfoPlanner.classList.add('hidden');
+      uploadInfoToDo.classList.remove('hidden');
+      document.getElementById('header-subtitle').textContent = 'Create tasks in Microsoft To Do from a CSV file';
+    } else {
+      uploadInfoPlanner.classList.remove('hidden');
+      uploadInfoToDo.classList.add('hidden');
+      document.getElementById('header-subtitle').textContent = 'Create tasks in Microsoft Planner from a CSV file';
+    }
+
+    // Fetch the appropriate session data
+    fetchExistingData();
+  }
+
   async function fetchExistingData() {
+    serviceStatusEl.textContent = 'Connecting...';
+    serviceStatusEl.className = 'service-status info';
+
     try {
-      const response = await chrome.runtime.sendMessage({ action: 'getImportSession' });
-      if (response.success) {
-        importSession = response.data;
-        existingBuckets = response.data.buckets || [];
-        existingResources = response.data.resources || [];
-        plannerUrl = response.data.plannerUrl || '';
-        console.log('[Import] Session initialized:', {
-          baseUrl: importSession.baseUrl,
-          buckets: existingBuckets.length,
-          resources: existingResources.length
-        });
+      if (serviceType === 'todo') {
+        // Fetch To Do session (lists)
+        const response = await chrome.runtime.sendMessage({ action: 'getToDoImportSession' });
+        if (response.success) {
+          importSession = response.data;
+          todoLists = response.data.lists || [];
+          destinationUrl = response.data.todoUrl || 'https://to-do.office.com';
+
+          // Populate list dropdown
+          todoListSelect.innerHTML = '<option value="">Select a list...</option>';
+          todoLists.forEach(list => {
+            const option = document.createElement('option');
+            option.value = list.id;
+            option.textContent = list.name;
+            if (list.wellknownListName === 'defaultList') {
+              option.textContent += ' (Default)';
+            }
+            todoListSelect.appendChild(option);
+          });
+
+          console.log('[Import] To Do session initialized:', {
+            lists: todoLists.length
+          });
+
+          serviceStatusEl.textContent = `Connected to To Do (${todoLists.length} lists available)`;
+          serviceStatusEl.className = 'service-status success';
+        } else {
+          console.error('[Import] Failed to get To Do session:', response.error);
+          serviceStatusEl.textContent = response.error || 'Failed to connect to To Do';
+          serviceStatusEl.className = 'service-status error';
+        }
       } else {
-        console.error('[Import] Failed to get session:', response.error);
-        showError('Failed to connect to Planner. Please navigate to a plan first and try again.');
+        // Fetch Planner Premium session (existing behavior)
+        const response = await chrome.runtime.sendMessage({ action: 'getImportSession' });
+        if (response.success) {
+          importSession = response.data;
+          existingBuckets = response.data.buckets || [];
+          existingResources = response.data.resources || [];
+          destinationUrl = response.data.plannerUrl || 'https://tasks.office.com';
+
+          console.log('[Import] Planner session initialized:', {
+            baseUrl: importSession.baseUrl,
+            buckets: existingBuckets.length,
+            resources: existingResources.length
+          });
+
+          serviceStatusEl.textContent = `Connected to Planner (${existingBuckets.length} buckets)`;
+          serviceStatusEl.className = 'service-status success';
+        } else {
+          console.error('[Import] Failed to get Planner session:', response.error);
+          serviceStatusEl.textContent = response.error || 'Failed to connect to Planner';
+          serviceStatusEl.className = 'service-status error';
+        }
       }
     } catch (error) {
       console.error('[Import] Error fetching session:', error);
-      showError('Failed to connect to extension. Please refresh the page.');
+      serviceStatusEl.textContent = 'Failed to connect. Please refresh the page.';
+      serviceStatusEl.className = 'service-status error';
     }
   }
 
@@ -165,7 +260,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().trim());
-    const requiredHeaders = ['outlinenumber', 'title'];
+
+    // Different required headers based on service type
+    const requiredHeaders = serviceType === 'todo' ? ['title'] : ['outlinenumber', 'title'];
     const missingHeaders = requiredHeaders.filter(h => !headers.includes(h));
 
     if (missingHeaders.length > 0) {
@@ -187,10 +284,10 @@ document.addEventListener('DOMContentLoaded', () => {
       // Normalize field names
       const normalized = {
         rowNumber: i,
-        outlineNumber: task.outlinenumber || task['outline number'] || '',
+        outlineNumber: task.outlinenumber || task['outline number'] || (serviceType === 'todo' ? String(i) : ''),
         title: task.title || '',
         bucket: task.bucket || '',
-        priority: normalizePriority(task.priority || ''),
+        priority: normalizePriority(task.priority || '', serviceType === 'todo'),
         startDate: task.startdate || task['start date'] || '',
         dueDate: task.duedate || task['due date'] || '',
         assignedTo: (task.assignedto || task['assigned to'] || '').split(';').map(e => e.trim()).filter(Boolean),
@@ -199,30 +296,37 @@ document.addEventListener('DOMContentLoaded', () => {
       };
 
       // Validate
-      if (!normalized.outlineNumber) {
+      if (serviceType !== 'todo' && !normalized.outlineNumber) {
         errors.push(`Row ${i + 1}: Missing OutlineNumber`);
       }
       if (!normalized.title) {
         errors.push(`Row ${i + 1}: Missing Title`);
       }
 
-      // Calculate parent outline
-      normalized.parentOutline = getParentOutline(normalized.outlineNumber);
-      normalized.depth = normalized.outlineNumber ? normalized.outlineNumber.split('.').length - 1 : 0;
+      // Calculate parent outline (only relevant for Planner)
+      if (serviceType !== 'todo') {
+        normalized.parentOutline = getParentOutline(normalized.outlineNumber);
+        normalized.depth = normalized.outlineNumber ? normalized.outlineNumber.split('.').length - 1 : 0;
+      } else {
+        normalized.parentOutline = null;
+        normalized.depth = 0;
+      }
 
       tasks.push(normalized);
     }
 
-    // Sort by outline number
-    tasks.sort((a, b) => compareOutlineNumbers(a.outlineNumber, b.outlineNumber));
+    // Sort by outline number (only for Planner)
+    if (serviceType !== 'todo') {
+      tasks.sort((a, b) => compareOutlineNumbers(a.outlineNumber, b.outlineNumber));
 
-    // Validate hierarchy
-    const outlineSet = new Set(tasks.map(t => t.outlineNumber));
-    tasks.forEach(task => {
-      if (task.parentOutline && !outlineSet.has(task.parentOutline)) {
-        errors.push(`Row ${task.rowNumber + 1}: Parent outline "${task.parentOutline}" not found for "${task.outlineNumber}"`);
-      }
-    });
+      // Validate hierarchy
+      const outlineSet = new Set(tasks.map(t => t.outlineNumber));
+      tasks.forEach(task => {
+        if (task.parentOutline && !outlineSet.has(task.parentOutline)) {
+          errors.push(`Row ${task.rowNumber + 1}: Parent outline "${task.parentOutline}" not found for "${task.outlineNumber}"`);
+        }
+      });
+    }
 
     parsedTasks = tasks;
 
@@ -268,12 +372,20 @@ document.addEventListener('DOMContentLoaded', () => {
     return result;
   }
 
-  function normalizePriority(priority) {
+  function normalizePriority(priority, isToDo = false) {
     const p = priority.toLowerCase().trim();
-    if (p === 'urgent' || p === '1') return 'urgent';
-    if (p === 'high' || p === 'important' || p === '3') return 'high';
-    if (p === 'low' || p === '9') return 'low';
-    return 'medium';
+    if (isToDo) {
+      // To Do uses: High, Normal, Low
+      if (p === 'high' || p === 'urgent' || p === 'important') return 'high';
+      if (p === 'low') return 'low';
+      return 'normal';
+    } else {
+      // Planner uses: Urgent, High, Medium, Low
+      if (p === 'urgent' || p === '1') return 'urgent';
+      if (p === 'high' || p === 'important' || p === '3') return 'high';
+      if (p === 'low' || p === '9') return 'low';
+      return 'medium';
+    }
   }
 
   function getParentOutline(outlineNumber) {
@@ -302,23 +414,36 @@ document.addEventListener('DOMContentLoaded', () => {
   function showPreview() {
     showStep('preview');
 
-    // Stats
+    // Stats - different for To Do (no subtasks)
     const rootTasks = parsedTasks.filter(t => !t.parentOutline);
     const subtasks = parsedTasks.filter(t => t.parentOutline);
     const checklistCount = parsedTasks.reduce((sum, t) => sum + t.checklistItems.length, 0);
 
     document.getElementById('stat-total').textContent = parsedTasks.length;
-    document.getElementById('stat-root').textContent = rootTasks.length;
-    document.getElementById('stat-subtasks').textContent = subtasks.length;
+    document.getElementById('stat-root').textContent = serviceType === 'todo' ? parsedTasks.length : rootTasks.length;
+    document.getElementById('stat-subtasks').textContent = serviceType === 'todo' ? 'N/A' : subtasks.length;
     document.getElementById('stat-checklists').textContent = checklistCount;
 
-    // Bucket mapping
-    const csvBuckets = [...new Set(parsedTasks.map(t => t.bucket).filter(Boolean))];
-    renderBucketMapping(csvBuckets);
+    // Show appropriate mapping/selection section based on service type
+    if (serviceType === 'todo') {
+      bucketMappingSection.classList.add('hidden');
+      listSelectionSection.classList.remove('hidden');
+      // Hide tree view for To Do (no hierarchy)
+      btnViewTree.style.display = 'none';
+    } else {
+      bucketMappingSection.classList.remove('hidden');
+      listSelectionSection.classList.add('hidden');
+      btnViewTree.style.display = '';
+      // Bucket mapping
+      const csvBuckets = [...new Set(parsedTasks.map(t => t.bucket).filter(Boolean))];
+      renderBucketMapping(csvBuckets);
+    }
 
     // Preview table
     renderPreviewTable();
-    renderPreviewTree();
+    if (serviceType !== 'todo') {
+      renderPreviewTree();
+    }
 
     // Enable import button if no critical errors
     updateImportButton();
@@ -373,22 +498,56 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderPreviewTable() {
-    previewBody.innerHTML = parsedTasks.map(task => {
+    // Update table headers based on service type
+    const tableHead = document.querySelector('#preview-table thead tr');
+    if (serviceType === 'todo') {
+      tableHead.innerHTML = `
+        <th>#</th>
+        <th>Title</th>
+        <th>Priority</th>
+        <th>Due Date</th>
+        <th>Checklist</th>
+      `;
+    } else {
+      tableHead.innerHTML = `
+        <th>Outline</th>
+        <th>Title</th>
+        <th>Bucket</th>
+        <th>Priority</th>
+        <th>Due Date</th>
+        <th>Assigned</th>
+        <th>Checklist</th>
+      `;
+    }
+
+    previewBody.innerHTML = parsedTasks.map((task, index) => {
       const priorityClass = task.priority;
       const assignedCount = task.assignedTo.length;
       const checklistCount = task.checklistItems.length;
 
-      return `
-        <tr>
-          <td class="outline">${escapeHtml(task.outlineNumber)}</td>
-          <td style="padding-left: ${task.depth * 16}px">${escapeHtml(task.title)}</td>
-          <td>${escapeHtml(task.bucket)}</td>
-          <td><span class="priority ${priorityClass}">${task.priority}</span></td>
-          <td>${task.dueDate || '-'}</td>
-          <td>${assignedCount > 0 ? `${assignedCount} person${assignedCount > 1 ? 's' : ''}` : '-'}</td>
-          <td>${checklistCount > 0 ? `${checklistCount} item${checklistCount > 1 ? 's' : ''}` : '-'}</td>
-        </tr>
-      `;
+      if (serviceType === 'todo') {
+        return `
+          <tr>
+            <td class="outline">${index + 1}</td>
+            <td>${escapeHtml(task.title)}</td>
+            <td><span class="priority ${priorityClass}">${task.priority}</span></td>
+            <td>${task.dueDate || '-'}</td>
+            <td>${checklistCount > 0 ? `${checklistCount} item${checklistCount > 1 ? 's' : ''}` : '-'}</td>
+          </tr>
+        `;
+      } else {
+        return `
+          <tr>
+            <td class="outline">${escapeHtml(task.outlineNumber)}</td>
+            <td style="padding-left: ${task.depth * 16}px">${escapeHtml(task.title)}</td>
+            <td>${escapeHtml(task.bucket)}</td>
+            <td><span class="priority ${priorityClass}">${task.priority}</span></td>
+            <td>${task.dueDate || '-'}</td>
+            <td>${assignedCount > 0 ? `${assignedCount} person${assignedCount > 1 ? 's' : ''}` : '-'}</td>
+            <td>${checklistCount > 0 ? `${checklistCount} item${checklistCount > 1 ? 's' : ''}` : '-'}</td>
+          </tr>
+        `;
+      }
     }).join('');
   }
 
@@ -451,8 +610,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateImportButton() {
     const hasErrors = !validationErrors.classList.contains('hidden');
-    const hasSession = importSession && importSession.baseUrl;
-    btnStartImport.disabled = hasErrors || !hasSession || parsedTasks.length === 0;
+
+    if (serviceType === 'todo') {
+      const hasSession = importSession && importSession.token;
+      const hasListSelected = selectedListId && selectedListId.length > 0;
+      btnStartImport.disabled = hasErrors || !hasSession || !hasListSelected || parsedTasks.length === 0;
+    } else {
+      const hasSession = importSession && importSession.baseUrl;
+      btnStartImport.disabled = hasErrors || !hasSession || parsedTasks.length === 0;
+    }
   }
 
   async function startImport() {
@@ -468,6 +634,94 @@ document.addEventListener('DOMContentLoaded', () => {
 
     progressTotal.textContent = total;
     progressLog.innerHTML = '';
+
+    if (serviceType === 'todo') {
+      // To Do import - simpler flat structure
+      await startToDoImport(total, failedItems);
+    } else {
+      // Planner Premium import - with hierarchy
+      await startPlannerImport(total, failedItems, taskIdMap);
+    }
+  }
+
+  // To Do import - simpler flat structure
+  async function startToDoImport(total, failedItems) {
+    let created = 0;
+    let failed = 0;
+
+    for (let i = 0; i < parsedTasks.length; i++) {
+      if (importCancelled) {
+        addLogEntry('Import cancelled by user', 'info');
+        break;
+      }
+
+      const task = parsedTasks[i];
+      progressCurrent.textContent = i + 1;
+      progressFill.style.width = `${((i + 1) / total) * 100}%`;
+
+      try {
+        // Create task in To Do
+        const response = await chrome.runtime.sendMessage({
+          action: 'createToDoTask',
+          listId: selectedListId,
+          token: importSession.token,
+          taskData: {
+            title: task.title,
+            priority: task.priority, // High, Normal, Low
+            dueDate: task.dueDate || null,
+            startDate: task.startDate || null,
+            notes: task.description || ''
+          }
+        });
+
+        if (response.success && response.data) {
+          const createdTask = response.data;
+          const taskId = createdTask.Id || createdTask.id;
+          addLogEntry(`Created: ${task.title}`, 'success');
+
+          // Add checklist items (subtasks in To Do)
+          if (task.checklistItems.length > 0) {
+            for (const item of task.checklistItems) {
+              try {
+                await chrome.runtime.sendMessage({
+                  action: 'addToDoChecklistItem',
+                  taskId: taskId,
+                  token: importSession.token,
+                  text: item,
+                  isCompleted: false
+                });
+              } catch (err) {
+                console.warn('[Import] Failed to add checklist item:', err.message);
+              }
+            }
+            addLogEntry(`  Added ${task.checklistItems.length} checklist items`, 'info');
+          }
+
+          created++;
+        } else {
+          throw new Error(response.error || 'Unknown error');
+        }
+      } catch (error) {
+        console.error('[Import] Error creating To Do task:', error);
+        addLogEntry(`Failed: ${task.title} - ${error.message}`, 'error');
+        failedItems.push({ task, error: error.message });
+        failed++;
+      }
+
+      // Small delay to avoid rate limiting
+      if (i < parsedTasks.length - 1) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+
+    showResults(created, failed, 0, failedItems);
+  }
+
+  // Planner Premium import - with hierarchy
+  async function startPlannerImport(total, failedItems, taskIdMap) {
+    let created = 0;
+    let failed = 0;
+    let skipped = 0;
 
     for (let i = 0; i < parsedTasks.length; i++) {
       if (importCancelled) {
@@ -570,6 +824,9 @@ document.addEventListener('DOMContentLoaded', () => {
     resultFailed.textContent = failed;
     resultSkipped.textContent = skipped;
 
+    // Update button text based on service type
+    btnViewDestination.textContent = serviceType === 'todo' ? 'View in To Do' : 'View in Planner';
+
     if (failedItems.length > 0) {
       failedTasks.classList.remove('hidden');
       failedList.innerHTML = failedItems.map(item => `
@@ -608,7 +865,9 @@ document.addEventListener('DOMContentLoaded', () => {
   function resetImport() {
     parsedTasks = [];
     bucketMapping = {};
+    selectedListId = null;
     fileInput.value = '';
+    todoListSelect.value = '';
     showStep('upload');
   }
 
@@ -616,12 +875,16 @@ document.addEventListener('DOMContentLoaded', () => {
     alert(message); // Simple error display, can be improved
   }
 
-  function downloadTemplate() {
-    const blob = new Blob([CSV_TEMPLATE], { type: 'text/csv' });
+  function downloadTemplate(type) {
+    const isToDo = type === 'todo';
+    const template = isToDo ? CSV_TEMPLATE_TODO : CSV_TEMPLATE_PLANNER;
+    const filename = isToDo ? 'todo-import-template.csv' : 'planner-import-template.csv';
+
+    const blob = new Blob([template], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'planner-import-template.csv';
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
