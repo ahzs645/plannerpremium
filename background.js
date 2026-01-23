@@ -9,6 +9,7 @@
 
 const GRAPH_API = 'https://graph.microsoft.com/v1.0';
 const PSS_API = 'https://project.microsoft.com/pss/api/v1.0';
+const TODO_SUBSTRATE_API = 'https://substrate.office.com/todob2/api/v1';
 
 // ============================================
 // EXTRACTION STATE MANAGEMENT
@@ -582,61 +583,95 @@ async function fetchPremiumPlanData(projectId, token, tabId) {
 }
 
 // ============================================
-// TO DO API - MICROSOFT TO DO DATA
+// TO DO API - MICROSOFT TO DO DATA (Substrate API)
 // ============================================
 
 // Map To Do status to percentComplete
 function mapToDoStatus(status) {
+  // Substrate API uses different status values
   const statusMap = {
     'notStarted': 0,
+    'NotStarted': 0,
     'inProgress': 50,
+    'InProgress': 50,
     'completed': 100,
+    'Completed': 100,
     'waitingOnOthers': 25,
-    'deferred': 0
+    'WaitingOnOthers': 25,
+    'deferred': 0,
+    'Deferred': 0
   };
   return statusMap[status] || 0;
 }
 
 // Map To Do importance to Planner-style priority
 function mapToDoImportance(importance) {
+  // Substrate API may use different casing
+  const normalizedImportance = (importance || '').toLowerCase();
   const importanceMap = {
     'low': { value: 9, label: 'Low' },
     'normal': { value: 5, label: 'Medium' },
     'high': { value: 3, label: 'High' }
   };
-  return importanceMap[importance] || { value: 5, label: 'Medium' };
+  return importanceMap[normalizedImportance] || { value: 5, label: 'Medium' };
+}
+
+// Substrate API fetch wrapper
+async function substrateFetch(endpoint, token) {
+  const url = endpoint.startsWith('http') ? endpoint : `${TODO_SUBSTRATE_API}${endpoint}`;
+  console.log('[Background] Substrate fetch:', url);
+
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error('[Background] Substrate API error:', response.status, errorText);
+    throw new Error(`Substrate API error: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
 }
 
 async function fetchToDoListData(listId, token, tabId) {
-  console.log('[Background] Fetching To Do data via Graph API...');
+  console.log('[Background] Fetching To Do data via Substrate API...');
   console.log('[Background] List ID:', listId);
 
   sendProgressToTab(tabId, { status: 'fetching', message: 'Fetching To Do lists...' });
 
-  // If no listId provided, fetch all lists and their tasks
+  // Fetch all task folders (lists) from Substrate API
   let lists = [];
   let targetList = null;
 
-  // Fetch all lists first
-  const listsResponse = await graphFetch('/me/todo/lists', token);
-  if (!listsResponse.ok) {
-    throw new Error(`Failed to fetch To Do lists: ${listsResponse.status}`);
+  try {
+    const listsData = await substrateFetch('/taskfolders', token);
+    // Substrate API returns data in 'value' array or directly as array
+    lists = listsData.value || listsData || [];
+    console.log('[Background] Found', lists.length, 'To Do lists');
+    console.log('[Background] Lists structure sample:', lists[0]);
+  } catch (err) {
+    console.error('[Background] Failed to fetch task folders:', err);
+    throw new Error(`Failed to fetch To Do lists: ${err.message}`);
   }
-  const listsData = await listsResponse.json();
-  lists = listsData.value || [];
-
-  console.log('[Background] Found', lists.length, 'To Do lists');
 
   // Find the target list or use all lists
   if (listId) {
-    targetList = lists.find(l => l.id === listId);
+    // Substrate uses 'Id' (capital I) for the folder ID
+    targetList = lists.find(l => l.Id === listId || l.id === listId);
     if (!targetList) {
-      // Try to find by display name
-      targetList = lists.find(l => l.displayName?.toLowerCase() === listId.toLowerCase());
+      // Try to find by name
+      targetList = lists.find(l =>
+        (l.Name || l.name || l.DisplayName || l.displayName || '').toLowerCase() === listId.toLowerCase()
+      );
     }
   }
 
-  // If still no target list, use the first non-system list or all lists
+  // If still no target list, use all lists
   const listsToFetch = targetList ? [targetList] : lists;
 
   sendProgressToTab(tabId, {
@@ -651,40 +686,38 @@ async function fetchToDoListData(listId, token, tabId) {
 
   for (let i = 0; i < listsToFetch.length; i++) {
     const list = listsToFetch[i];
-    listMap[list.id] = list.displayName;
+    // Substrate API uses different property names - try various possibilities
+    const folderId = list.Id || list.id;
+    const folderName = list.Name || list.name || list.DisplayName || list.displayName || 'Unknown List';
+
+    listMap[folderId] = folderName;
 
     sendProgressToTab(tabId, {
       status: 'extracting',
-      message: `Fetching "${list.displayName}"...`,
+      message: `Fetching "${folderName}"...`,
       total: listsToFetch.length,
       current: i
     });
 
     try {
-      // Fetch tasks for this list (with checklist items expanded)
-      let nextLink = `/me/todo/lists/${list.id}/tasks?$expand=checklistItems`;
-      let listTasks = [];
+      // Fetch tasks for this folder from Substrate API
+      const tasksData = await substrateFetch(`/taskfolders/${folderId}/tasks`, token);
+      let listTasks = tasksData.value || tasksData || [];
 
-      while (nextLink) {
-        const tasksResponse = await graphFetch(nextLink, token);
-        if (!tasksResponse.ok) {
-          console.warn(`Failed to fetch tasks for list ${list.displayName}`);
-          break;
-        }
-        const tasksData = await tasksResponse.json();
-        listTasks = listTasks.concat(tasksData.value || []);
-        nextLink = tasksData['@odata.nextLink'];
+      console.log(`[Background] Fetched ${listTasks.length} tasks from "${folderName}"`);
+      if (listTasks.length > 0) {
+        console.log('[Background] Task structure sample:', listTasks[0]);
       }
 
       // Enrich tasks with list info
       listTasks.forEach(task => {
-        task._listId = list.id;
-        task._listName = list.displayName;
+        task._listId = folderId;
+        task._listName = folderName;
       });
 
       allTasks = allTasks.concat(listTasks);
     } catch (err) {
-      console.error(`Error fetching tasks for list ${list.displayName}:`, err);
+      console.error(`Error fetching tasks for folder ${folderName}:`, err);
     }
   }
 
@@ -696,47 +729,64 @@ async function fetchToDoListData(listId, token, tabId) {
   });
 
   // Transform tasks to common format
+  // Substrate API uses different property names than Graph API
   const enrichedTasks = allTasks.map((task) => {
-    const priority = mapToDoImportance(task.importance);
-    const percentComplete = mapToDoStatus(task.status);
+    // Handle various possible property names from Substrate API
+    const taskId = task.Id || task.id;
+    const title = task.Subject || task.subject || task.Title || task.title || 'Untitled Task';
+    const body = task.Body || task.body || {};
+    const description = body.Content || body.content || '';
+    const status = task.Status || task.status || 'notStarted';
+    const importance = task.Importance || task.importance || 'normal';
+
+    // Dates - Substrate may use different formats
+    const startDate = task.StartDateTime || task.startDateTime || task.StartDate || task.startDate;
+    const dueDate = task.DueDateTime || task.dueDateTime || task.DueDate || task.dueDate;
+    const completedDate = task.CompletedDateTime || task.completedDateTime;
+
+    const priority = mapToDoImportance(importance);
+    const percentComplete = mapToDoStatus(status);
+
+    // Checklist items
+    const checklistItems = task.Checklist || task.checklist || task.ChecklistItems || task.checklistItems || [];
 
     return {
-      id: task.id,
-      title: task.title || 'Untitled Task',
-      description: task.body?.content || '',
+      id: taskId,
+      title: title,
+      description: description,
       bucketId: task._listId,
       bucketName: task._listName, // Use list name as bucket
-      startDateTime: task.startDateTime?.dateTime || null,
-      dueDateTime: task.dueDateTime?.dateTime || null,
-      completedDateTime: task.completedDateTime?.dateTime || null,
+      startDateTime: startDate?.DateTime || startDate?.dateTime || startDate || null,
+      dueDateTime: dueDate?.DateTime || dueDate?.dateTime || dueDate || null,
+      completedDateTime: completedDate?.DateTime || completedDate?.dateTime || completedDate || null,
       percentComplete: percentComplete,
       priority: priority.value,
       priorityLabel: priority.label,
-      isComplete: task.status === 'completed',
-      status: task.status,
-      importance: task.importance,
+      isComplete: status.toLowerCase() === 'completed',
+      status: status,
+      importance: importance,
 
       // To Do has no assignments
       assignedTo: [],
       assignments: [],
 
-      // Checklist items
-      checklist: (task.checklistItems || []).map(item => ({
-        id: item.id,
-        title: item.displayName,
-        isChecked: item.isChecked || false
+      // Checklist items - handle various possible structures
+      checklist: (Array.isArray(checklistItems) ? checklistItems : []).map(item => ({
+        id: item.Id || item.id,
+        title: item.DisplayName || item.displayName || item.Name || item.name || item.Title || item.title || '',
+        isChecked: item.IsChecked || item.isChecked || item.Checked || item.checked || false
       })),
 
       // To Do specific fields
-      isReminderOn: task.isReminderOn || false,
-      reminderDateTime: task.reminderDateTime?.dateTime || null,
-      hasAttachments: task.hasAttachments || false,
-      categories: task.categories || [],
+      isReminderOn: task.IsReminderOn || task.isReminderOn || false,
+      reminderDateTime: task.ReminderDateTime || task.reminderDateTime || null,
+      hasAttachments: task.HasAttachments || task.hasAttachments || false,
+      categories: task.Categories || task.categories || [],
 
       // Meta
-      createdDateTime: task.createdDateTime,
-      lastModifiedDateTime: task.lastModifiedDateTime,
-      source: 'todo-api',
+      createdDateTime: task.CreatedDateTime || task.createdDateTime,
+      lastModifiedDateTime: task.LastModifiedDateTime || task.lastModifiedDateTime,
+      source: 'todo-substrate-api',
 
       // Keep raw data
       raw: task
@@ -750,28 +800,31 @@ async function fetchToDoListData(listId, token, tabId) {
     current: enrichedTasks.length
   });
 
+  // Build return object with list info
+  const targetListId = targetList ? (targetList.Id || targetList.id) : 'all-lists';
+  const targetListName = targetList
+    ? (targetList.Name || targetList.name || targetList.DisplayName || targetList.displayName)
+    : 'All To Do Lists';
+
   return {
     tasks: enrichedTasks,
-    plan: targetList ? {
-      id: targetList.id,
-      title: targetList.displayName
-    } : {
-      id: 'all-lists',
-      title: 'All To Do Lists'
+    plan: {
+      id: targetListId,
+      title: targetListName
     },
     // Use lists as "buckets" for compatibility
     buckets: listsToFetch.map(l => ({
-      id: l.id,
-      name: l.displayName,
-      isShared: l.isShared || false,
-      isOwner: l.isOwner !== false,
-      wellknownListName: l.wellknownListName
+      id: l.Id || l.id,
+      name: l.Name || l.name || l.DisplayName || l.displayName || 'Unknown',
+      isShared: l.IsShared || l.isShared || false,
+      isOwner: l.IsOwner !== false && l.isOwner !== false,
+      wellknownListName: l.WellknownListName || l.wellknownListName
     })),
     bucketMap: listMap,
-    source: 'todo-api',
+    source: 'todo-substrate-api',
     serviceType: 'todo',
     planType: 'todo',
-    extractionMethod: 'graph-api',
+    extractionMethod: 'substrate-api',
     extractedAt: new Date().toISOString()
   };
 }
@@ -891,7 +944,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // Fetch To Do list data via Graph API
+  // Fetch To Do list data via Substrate API
   if (request.action === 'fetchToDoList') {
     const { listId, token } = request;
     const targetTabId = request.tabId || tabId;
@@ -901,7 +954,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       status: 'extracting',
       startedAt: Date.now(),
       error: null,
-      method: 'todo-api',
+      method: 'todo-substrate-api',
       progress: { status: 'fetching', message: 'Starting To Do extraction...' }
     });
 

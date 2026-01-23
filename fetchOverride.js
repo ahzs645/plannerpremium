@@ -71,10 +71,11 @@
     return match ? match[1] : null;
   }
 
-  // Extract To Do list ID from Graph API URL
-  // Format: /me/todo/lists/{listId}/tasks
-  function extractToDoListId(url) {
-    const match = url.match(/\/me\/todo\/lists\/([^\/\?]+)/i);
+
+  // Extract To Do folder ID from Substrate API URL
+  // Format: /todob2/api/v1/taskfolders/{folderId}/tasks
+  function extractToDoFolderId(url) {
+    const match = url.match(/\/taskfolders\/([^\/\?]+)/i);
     return match ? match[1] : null;
   }
 
@@ -89,6 +90,46 @@
       url = resource.url;
     } else if (resource && resource.url) {
       url = resource.url;
+    }
+
+    // Check if this is a To Do Substrate API call
+    if (url && url.includes('substrate.office.com/todob2')) {
+      const authHeader = extractAuthHeader(config, resource);
+
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+
+        if (token.length > 50) { // Substrate tokens are long but may not be JWTs
+          window.__todoToken = token;
+          window.__todoTokenCapturedAt = Date.now();
+
+          // Extract folder ID if present
+          const folderId = extractToDoFolderId(url);
+          if (folderId) {
+            window.__todoListId = folderId;
+          }
+
+          // Notify via custom event for To Do
+          window.dispatchEvent(new CustomEvent('todo-token-captured', {
+            detail: {
+              token: token,
+              listId: folderId,
+              timestamp: Date.now(),
+              url: url
+            }
+          }));
+
+          // Also post message for cross-context
+          window.postMessage({
+            type: 'TODO_TOKEN_CAPTURED',
+            token: token,
+            listId: folderId,
+            timestamp: Date.now()
+          }, '*');
+
+          console.log('[Planner Exporter] To Do Substrate token captured, folder:', folderId);
+        }
+      }
     }
 
     // Check if this is a PSS API call (Premium Plans)
@@ -138,7 +179,7 @@
       }
     }
 
-    // Check if this is a Graph API call or batch call
+    // Check if this is a Graph API call or batch call (for Planner)
     if (url && (url.includes('graph.microsoft.com') || url.includes('$batch'))) {
       const authHeader = extractAuthHeader(config, resource);
 
@@ -150,37 +191,6 @@
         if (token.split('.').length === 3) {
           window.__plannerGraphToken = token;
           window.__plannerGraphTokenCapturedAt = Date.now();
-
-          // Check if this is a To Do API call
-          if (url.includes('/me/todo/')) {
-            window.__todoToken = token;
-            window.__todoTokenCapturedAt = Date.now();
-
-            const listId = extractToDoListId(url);
-            if (listId) {
-              window.__todoListId = listId;
-            }
-
-            // Notify via custom event for To Do
-            window.dispatchEvent(new CustomEvent('todo-token-captured', {
-              detail: {
-                token: token,
-                listId: listId,
-                timestamp: Date.now(),
-                url: url
-              }
-            }));
-
-            // Also post message for cross-context
-            window.postMessage({
-              type: 'TODO_TOKEN_CAPTURED',
-              token: token,
-              listId: listId,
-              timestamp: Date.now()
-            }, '*');
-
-            console.log('[Planner Exporter] To Do token captured for list:', listId);
-          }
 
           // Notify via custom event
           window.dispatchEvent(new CustomEvent('planner-token-captured', {
@@ -218,6 +228,20 @@
     if (this._plannerUrl && name.toLowerCase() === 'authorization' && value.startsWith('Bearer ')) {
       const token = value.substring(7);
 
+      // To Do Substrate API
+      if (this._plannerUrl.includes('substrate.office.com/todob2')) {
+        if (token.length > 50) {
+          window.__todoToken = token;
+          window.__todoTokenCapturedAt = Date.now();
+
+          const folderId = extractToDoFolderId(this._plannerUrl);
+          if (folderId) {
+            window.__todoListId = folderId;
+          }
+          console.log('[Planner Exporter] To Do Substrate token captured via XHR');
+        }
+      }
+
       if (token.split('.').length === 3) {
         // PSS API (Premium Plans)
         if (this._plannerUrl.includes('project.microsoft.com')) {
@@ -234,22 +258,11 @@
         if (this._plannerUrl.includes('graph.microsoft.com') || this._plannerUrl.includes('$batch')) {
           window.__plannerGraphToken = token;
           window.__plannerGraphTokenCapturedAt = Date.now();
-
-          // Check for To Do API
-          if (this._plannerUrl.includes('/me/todo/')) {
-            window.__todoToken = token;
-            window.__todoTokenCapturedAt = Date.now();
-
-            const listId = extractToDoListId(this._plannerUrl);
-            if (listId) {
-              window.__todoListId = listId;
-            }
-          }
         }
       }
     }
     return originalXHRSetHeader.apply(this, [name, value]);
   };
 
-  console.log('[Planner Exporter] Fetch override initialized (Graph + PSS)');
+  console.log('[Planner Exporter] Fetch override initialized (Graph + PSS + Substrate)');
 })();

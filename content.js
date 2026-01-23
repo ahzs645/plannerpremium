@@ -590,13 +590,13 @@
     const context = getCurrentContext();
     console.log('[PlannerExporter] Extraction context:', context);
 
-    // Microsoft To Do - always use Graph API
+    // Microsoft To Do - always use Substrate API
     if (context.serviceType === 'todo' && context.token) {
-      console.log('[PlannerExporter] To Do service - calling background.js for Graph API...');
+      console.log('[PlannerExporter] To Do service - calling background.js for Substrate API...');
 
       try {
         if (onProgress) {
-          onProgress({ status: 'fetching', message: 'Fetching via Graph API...' });
+          onProgress({ status: 'fetching', message: 'Fetching via Substrate API...' });
         }
 
         // Delegate to background.js service worker
@@ -607,14 +607,14 @@
         });
 
         if (response.success) {
-          console.log('[PlannerExporter] To Do Graph API extraction successful');
+          console.log('[PlannerExporter] To Do Substrate API extraction successful');
           return response.data;
         } else {
-          throw new Error(response.error || 'To Do API failed');
+          throw new Error(response.error || 'To Do Substrate API failed');
         }
 
       } catch (apiError) {
-        console.error('[PlannerExporter] To Do API failed:', apiError.message);
+        console.error('[PlannerExporter] To Do Substrate API failed:', apiError.message);
         throw apiError; // No DOM fallback for To Do
       }
     }

@@ -57,7 +57,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Render all data
   function renderData() {
     // Header info with source indicator
-    const sourceLabel = exportData.source === 'dom' ? ' (DOM)' : '';
+    let sourceLabel = '';
+    if (exportData.source === 'dom') {
+      sourceLabel = ' (DOM)';
+    } else if (exportData.source === 'todo-substrate-api') {
+      sourceLabel = ' (Substrate)';
+    }
     let planTypeLabel = '';
     if (exportData.serviceType === 'todo' || exportData.planType === 'todo') {
       planTypeLabel = ' [To Do]';
@@ -408,7 +413,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       typeLabel = 'Basic (Standard Planner)';
     }
     text += `Type: ${typeLabel}\n`;
-    text += `Source: ${exportData.source === 'dom' ? 'DOM Scraping' : 'Graph API'}\n`;
+    let sourceLabel;
+    if (exportData.source === 'dom') {
+      sourceLabel = 'DOM Scraping';
+    } else if (exportData.source === 'todo-substrate-api') {
+      sourceLabel = 'Substrate API';
+    } else {
+      sourceLabel = 'Graph API';
+    }
+    text += `Source: ${sourceLabel}\n`;
     text += `Exported: ${formatDate(exportData.exportedAt)}\n`;
     text += `Total Tasks: ${tasks.length}\n\n`;
 

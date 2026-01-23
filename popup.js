@@ -179,7 +179,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Show API access status
     if (isToDoService && context.token) {
-      apiStatusEl.textContent = 'Graph API (To Do)';
+      apiStatusEl.textContent = 'Substrate API (To Do)';
       apiStatusEl.className = 'value success';
     } else if (context.hasPssAccess) {
       apiStatusEl.textContent = 'PSS API (Full)';
