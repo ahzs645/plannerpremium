@@ -654,6 +654,11 @@ header h1 {
   color: #0078d4;
 }
 
+.service-status a {
+  color: inherit;
+  font-weight: 600;
+}
+
 /* To Do List Selection */
 .list-selection {
   margin-bottom: 24px;

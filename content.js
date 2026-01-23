@@ -767,6 +767,24 @@
       }
 
       const ctx = getCurrentContext();
+
+      // For To Do service, get the Substrate token from chrome.storage
+      if (ctx.serviceType === 'todo') {
+        chrome.storage.local.get(['todoSubstrateToken', 'todoSubstrateTokenTimestamp'], (data) => {
+          if (data.todoSubstrateToken) {
+            ctx.token = data.todoSubstrateToken;
+            ctx.hasToken = true;
+            ctx.tokenSource = 'substrate-storage';
+            console.log('[PlannerExporter] getContext - using Substrate token from storage');
+          } else {
+            console.log('[PlannerExporter] getContext - no Substrate token in storage');
+          }
+          console.log('[PlannerExporter] getContext - returning:', ctx);
+          sendResponse(ctx);
+        });
+        return true; // Keep channel open for async response
+      }
+
       console.log('[PlannerExporter] getContext - returning:', ctx);
       sendResponse(ctx);
       return true;

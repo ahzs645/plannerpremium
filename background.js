@@ -617,8 +617,9 @@ function mapToDoImportance(importance) {
   return importanceMap[normalizedImportance] || { value: 5, label: 'Medium' };
 }
 
-// Get fresh To Do token from storage
+// Get fresh To Do token from storage or active tab
 async function getFreshToDoToken() {
+  // First try chrome.storage.local
   const data = await chrome.storage.local.get(['todoSubstrateToken', 'todoSubstrateTokenTimestamp']);
   if (data.todoSubstrateToken) {
     const tokenAge = Date.now() - (data.todoSubstrateTokenTimestamp || 0);
@@ -630,6 +631,31 @@ async function getFreshToDoToken() {
     }
     console.log('[Background] Stored token is too old:', Math.round(tokenAge / 1000), 'seconds, max age:', MAX_TOKEN_AGE / 1000);
   }
+
+  // Fallback: Try to get token from active To Do tab
+  console.log('[Background] No valid token in storage, trying active To Do tab...');
+  try {
+    const tabs = await chrome.tabs.query({ url: '*://to-do.office.com/*' });
+    for (const tab of tabs) {
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, { action: 'getContext' });
+        if (response && response.token) {
+          console.log('[Background] Got token from active To Do tab');
+          // Store it for future use
+          await chrome.storage.local.set({
+            todoSubstrateToken: response.token,
+            todoSubstrateTokenTimestamp: Date.now()
+          });
+          return response.token;
+        }
+      } catch (e) {
+        // Tab might not have content script loaded
+      }
+    }
+  } catch (e) {
+    console.log('[Background] Could not query To Do tabs:', e.message);
+  }
+
   return null;
 }
 

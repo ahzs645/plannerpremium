@@ -101,6 +101,15 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       fetchExistingData();
     });
 
+    // Double-click to clear token and refresh (helps when token is stale)
+    btnRefreshConnection.addEventListener('dblclick', async () => {
+      if (serviceType === 'todo') {
+        await chrome.storage.local.remove(['todoSubstrateToken', 'todoSubstrateTokenTimestamp']);
+        serviceStatusEl.innerHTML = 'Token cleared. Now go to <a href="https://to-do.office.com" target="_blank">to-do.office.com</a>, click on a task, then click Refresh.';
+        serviceStatusEl.className = 'service-status info';
+      }
+    });
+
     // Upload zone
     btnBrowse.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', handleFileSelect);
