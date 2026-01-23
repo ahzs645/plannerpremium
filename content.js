@@ -593,6 +593,7 @@
     // Microsoft To Do - always use Substrate API
     if (context.serviceType === 'todo' && context.token) {
       console.log('[PlannerExporter] To Do service - calling background.js for Substrate API...');
+      console.log('[PlannerExporter] Current list name:', context.listName);
 
       try {
         if (onProgress) {
@@ -600,9 +601,11 @@
         }
 
         // Delegate to background.js service worker
+        // Pass the current list name so we only fetch that list's tasks
         const response = await chrome.runtime.sendMessage({
           action: 'fetchToDoList',
           listId: context.listId,
+          listName: context.listName, // Pass the current list name from DOM
           token: context.token
         });
 

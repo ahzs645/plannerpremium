@@ -68,12 +68,15 @@
   // Get To Do list name from DOM
   function getToDoListNameFromDom() {
     // Try various selectors for list name in To Do
+    // The h1 heading typically shows the current list name
     const selectors = [
+      'h1',
+      '[role="heading"][aria-level="1"]',
       '[data-automationid="ListHeaderName"]',
       '[class*="listName"]',
       '[class*="ListName"]',
-      'h1',
-      '[role="heading"][aria-level="1"]'
+      '[class*="ListHeader"] span',
+      '[class*="listHeader"] span'
     ];
 
     for (const selector of selectors) {
@@ -81,7 +84,11 @@
         const els = document.querySelectorAll(selector);
         for (const el of els) {
           const text = el.textContent?.trim();
-          if (text && text.length > 0 && text.length < 100) {
+          // Filter out generic titles and ensure it's a real list name
+          if (text && text.length > 0 && text.length < 100 &&
+              !text.toLowerCase().includes('microsoft to do') &&
+              !text.toLowerCase().includes('to-do')) {
+            console.log('[Planner Exporter] Found To Do list name:', text);
             return text;
           }
         }

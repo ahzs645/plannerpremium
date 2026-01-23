@@ -638,9 +638,10 @@ async function substrateFetch(endpoint, token) {
   return response.json();
 }
 
-async function fetchToDoListData(listId, token, tabId) {
+async function fetchToDoListData(listId, listName, token, tabId) {
   console.log('[Background] Fetching To Do data via Substrate API...');
   console.log('[Background] List ID:', listId);
+  console.log('[Background] List Name:', listName);
 
   sendProgressToTab(tabId, { status: 'fetching', message: 'Fetching To Do lists...' });
 
@@ -659,27 +660,50 @@ async function fetchToDoListData(listId, token, tabId) {
     throw new Error(`Failed to fetch To Do lists: ${err.message}`);
   }
 
-  // Find the target list or use all lists
-  if (listId) {
-    // Substrate uses PascalCase - 'Id' (capital I) for the folder ID
-    targetList = lists.find(l => l.Id === listId || l.id === listId);
-    if (!targetList) {
-      // Try to find by name (Substrate uses 'Name' with capital N)
-      targetList = lists.find(l =>
-        (l.Name || l.DisplayName || l.name || l.displayName || '').toLowerCase() === listId.toLowerCase()
-      );
-    }
+  // Find the target list by name first (more reliable from DOM), then by ID
+  if (listName) {
+    // Try to find by name (Substrate uses 'Name' with capital N)
+    targetList = lists.find(l =>
+      (l.Name || l.DisplayName || l.name || l.displayName || '').toLowerCase() === listName.toLowerCase()
+    );
+    console.log('[Background] Found list by name:', targetList ? 'Yes' : 'No');
   }
 
-  // If still no target list, use all lists
+  // If not found by name, try by ID
+  if (!targetList && listId) {
+    // Substrate uses PascalCase - 'Id' (capital I) for the folder ID
+    targetList = lists.find(l => l.Id === listId || l.id === listId);
+    console.log('[Background] Found list by ID:', targetList ? 'Yes' : 'No');
+  }
+
+  // If we have a list name but couldn't find it, throw an error
+  if (listName && !targetList) {
+    console.error('[Background] Could not find list:', listName);
+    console.log('[Background] Available lists:', lists.map(l => l.Name || l.name));
+    throw new Error(`List "${listName}" not found. Please navigate to a specific list.`);
+  }
+
+  // If no target list found and no name specified, use all lists (fallback)
   const listsToFetch = targetList ? [targetList] : lists;
 
-  sendProgressToTab(tabId, {
-    status: 'extracting',
-    message: `Fetching tasks from ${listsToFetch.length} list(s)...`,
-    total: listsToFetch.length,
-    current: 0
-  });
+  if (targetList) {
+    const targetName = targetList.Name || targetList.name;
+    console.log('[Background] Fetching only list:', targetName);
+    sendProgressToTab(tabId, {
+      status: 'extracting',
+      message: `Fetching tasks from "${targetName}"...`,
+      total: 1,
+      current: 0
+    });
+  } else {
+    console.log('[Background] No specific list - fetching all', lists.length, 'lists');
+    sendProgressToTab(tabId, {
+      status: 'extracting',
+      message: `Fetching tasks from ${listsToFetch.length} list(s)...`,
+      total: listsToFetch.length,
+      current: 0
+    });
+  }
 
   let allTasks = [];
   const listMap = {};
@@ -949,7 +973,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Fetch To Do list data via Substrate API
   if (request.action === 'fetchToDoList') {
-    const { listId, token } = request;
+    const { listId, listName, token } = request;
     const targetTabId = request.tabId || tabId;
 
     // Update state to extracting
@@ -958,16 +982,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       startedAt: Date.now(),
       error: null,
       method: 'todo-substrate-api',
-      progress: { status: 'fetching', message: 'Starting To Do extraction...' }
+      progress: { status: 'fetching', message: `Fetching "${listName || 'To Do'}" list...` }
     });
 
-    fetchToDoListData(listId, token, targetTabId)
+    fetchToDoListData(listId, listName, token, targetTabId)
       .then(data => {
+        const listTitle = data.plan?.title || listName || 'To Do';
         updateExtractionState({
           status: 'complete',
           completedAt: Date.now(),
           taskCount: data.tasks?.length || 0,
-          progress: { status: 'complete', message: `Extracted ${data.tasks?.length || 0} tasks from To Do` }
+          progress: { status: 'complete', message: `Extracted ${data.tasks?.length || 0} tasks from "${listTitle}"` }
         });
         sendResponse({ success: true, data });
       })
