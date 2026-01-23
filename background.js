@@ -649,9 +649,9 @@ async function fetchToDoListData(listId, token, tabId) {
   let targetList = null;
 
   try {
-    const listsData = await substrateFetch('/taskfolders', token);
-    // Substrate API returns data in 'value' array or directly as array
-    lists = listsData.value || listsData || [];
+    const listsData = await substrateFetch('/taskfolders?maxPageSize=200', token);
+    // Substrate API uses PascalCase - 'Value' not 'value'
+    lists = listsData.Value || listsData.value || listsData || [];
     console.log('[Background] Found', lists.length, 'To Do lists');
     console.log('[Background] Lists structure sample:', lists[0]);
   } catch (err) {
@@ -661,12 +661,12 @@ async function fetchToDoListData(listId, token, tabId) {
 
   // Find the target list or use all lists
   if (listId) {
-    // Substrate uses 'Id' (capital I) for the folder ID
+    // Substrate uses PascalCase - 'Id' (capital I) for the folder ID
     targetList = lists.find(l => l.Id === listId || l.id === listId);
     if (!targetList) {
-      // Try to find by name
+      // Try to find by name (Substrate uses 'Name' with capital N)
       targetList = lists.find(l =>
-        (l.Name || l.name || l.DisplayName || l.displayName || '').toLowerCase() === listId.toLowerCase()
+        (l.Name || l.DisplayName || l.name || l.displayName || '').toLowerCase() === listId.toLowerCase()
       );
     }
   }
@@ -686,9 +686,9 @@ async function fetchToDoListData(listId, token, tabId) {
 
   for (let i = 0; i < listsToFetch.length; i++) {
     const list = listsToFetch[i];
-    // Substrate API uses different property names - try various possibilities
+    // Substrate API uses PascalCase - prioritize those
     const folderId = list.Id || list.id;
-    const folderName = list.Name || list.name || list.DisplayName || list.displayName || 'Unknown List';
+    const folderName = list.Name || list.DisplayName || list.name || list.displayName || 'Unknown List';
 
     listMap[folderId] = folderName;
 
@@ -701,8 +701,9 @@ async function fetchToDoListData(listId, token, tabId) {
 
     try {
       // Fetch tasks for this folder from Substrate API
-      const tasksData = await substrateFetch(`/taskfolders/${folderId}/tasks`, token);
-      let listTasks = tasksData.value || tasksData || [];
+      const tasksData = await substrateFetch(`/taskfolders/${folderId}/tasks?maxPageSize=200`, token);
+      // Substrate API uses PascalCase - 'Value' not 'value'
+      let listTasks = tasksData.Value || tasksData.value || tasksData || [];
 
       console.log(`[Background] Fetched ${listTasks.length} tasks from "${folderName}"`);
       if (listTasks.length > 0) {
@@ -729,26 +730,26 @@ async function fetchToDoListData(listId, token, tabId) {
   });
 
   // Transform tasks to common format
-  // Substrate API uses different property names than Graph API
+  // Substrate API uses PascalCase property names
   const enrichedTasks = allTasks.map((task) => {
-    // Handle various possible property names from Substrate API
+    // Substrate API uses PascalCase - prioritize those
     const taskId = task.Id || task.id;
-    const title = task.Subject || task.subject || task.Title || task.title || 'Untitled Task';
+    const title = task.Subject || task.Name || task.Title || task.subject || task.name || task.title || 'Untitled Task';
     const body = task.Body || task.body || {};
     const description = body.Content || body.content || '';
-    const status = task.Status || task.status || 'notStarted';
-    const importance = task.Importance || task.importance || 'normal';
+    const status = task.Status || task.status || 'NotStarted';
+    const importance = task.Importance || task.importance || 'Normal';
 
-    // Dates - Substrate may use different formats
-    const startDate = task.StartDateTime || task.startDateTime || task.StartDate || task.startDate;
-    const dueDate = task.DueDateTime || task.dueDateTime || task.DueDate || task.dueDate;
-    const completedDate = task.CompletedDateTime || task.completedDateTime;
+    // Dates - Substrate uses DueDate, StartDate (not DueDateTime)
+    const startDate = task.StartDate || task.StartDateTime || task.startDate || task.startDateTime;
+    const dueDate = task.DueDate || task.DueDateTime || task.dueDate || task.dueDateTime;
+    const completedDate = task.CompletedDate || task.CompletedDateTime || task.completedDate || task.completedDateTime;
 
     const priority = mapToDoImportance(importance);
     const percentComplete = mapToDoStatus(status);
 
-    // Checklist items
-    const checklistItems = task.Checklist || task.checklist || task.ChecklistItems || task.checklistItems || [];
+    // Checklist items - Substrate may use Checklist or ChecklistItems
+    const checklistItems = task.Checklist || task.ChecklistItems || task.checklist || task.checklistItems || [];
 
     return {
       id: taskId,
@@ -756,9 +757,10 @@ async function fetchToDoListData(listId, token, tabId) {
       description: description,
       bucketId: task._listId,
       bucketName: task._listName, // Use list name as bucket
-      startDateTime: startDate?.DateTime || startDate?.dateTime || startDate || null,
-      dueDateTime: dueDate?.DateTime || dueDate?.dateTime || dueDate || null,
-      completedDateTime: completedDate?.DateTime || completedDate?.dateTime || completedDate || null,
+      // Dates - Substrate may return DateTime as nested object { DateTime: "..." } or direct string
+      startDateTime: (typeof startDate === 'object' ? (startDate?.DateTime || startDate?.dateTime) : startDate) || null,
+      dueDateTime: (typeof dueDate === 'object' ? (dueDate?.DateTime || dueDate?.dateTime) : dueDate) || null,
+      completedDateTime: (typeof completedDate === 'object' ? (completedDate?.DateTime || completedDate?.dateTime) : completedDate) || null,
       percentComplete: percentComplete,
       priority: priority.value,
       priorityLabel: priority.label,
@@ -770,22 +772,22 @@ async function fetchToDoListData(listId, token, tabId) {
       assignedTo: [],
       assignments: [],
 
-      // Checklist items - handle various possible structures
+      // Checklist items - Substrate uses PascalCase
       checklist: (Array.isArray(checklistItems) ? checklistItems : []).map(item => ({
         id: item.Id || item.id,
-        title: item.DisplayName || item.displayName || item.Name || item.name || item.Title || item.title || '',
-        isChecked: item.IsChecked || item.isChecked || item.Checked || item.checked || false
+        title: item.DisplayName || item.Name || item.Title || item.displayName || item.name || item.title || '',
+        isChecked: item.IsChecked || item.Checked || item.isChecked || item.checked || false
       })),
 
-      // To Do specific fields
+      // To Do specific fields - Substrate uses PascalCase
       isReminderOn: task.IsReminderOn || task.isReminderOn || false,
-      reminderDateTime: task.ReminderDateTime || task.reminderDateTime || null,
+      reminderDateTime: task.ReminderDate || task.ReminderDateTime || task.reminderDateTime || null,
       hasAttachments: task.HasAttachments || task.hasAttachments || false,
       categories: task.Categories || task.categories || [],
 
-      // Meta
-      createdDateTime: task.CreatedDateTime || task.createdDateTime,
-      lastModifiedDateTime: task.LastModifiedDateTime || task.lastModifiedDateTime,
+      // Meta - Substrate uses PascalCase
+      createdDateTime: task.CreatedDateTime || task.DateTimeCreated || task.createdDateTime,
+      lastModifiedDateTime: task.LastModifiedDateTime || task.DateTimeLastModified || task.lastModifiedDateTime,
       source: 'todo-substrate-api',
 
       // Keep raw data
@@ -801,9 +803,10 @@ async function fetchToDoListData(listId, token, tabId) {
   });
 
   // Build return object with list info
+  // Substrate API uses PascalCase
   const targetListId = targetList ? (targetList.Id || targetList.id) : 'all-lists';
   const targetListName = targetList
-    ? (targetList.Name || targetList.name || targetList.DisplayName || targetList.displayName)
+    ? (targetList.Name || targetList.DisplayName || targetList.name || targetList.displayName)
     : 'All To Do Lists';
 
   return {
@@ -815,7 +818,7 @@ async function fetchToDoListData(listId, token, tabId) {
     // Use lists as "buckets" for compatibility
     buckets: listsToFetch.map(l => ({
       id: l.Id || l.id,
-      name: l.Name || l.name || l.DisplayName || l.displayName || 'Unknown',
+      name: l.Name || l.DisplayName || l.name || l.displayName || 'Unknown',
       isShared: l.IsShared || l.isShared || false,
       isOwner: l.IsOwner !== false && l.isOwner !== false,
       wellknownListName: l.WellknownListName || l.wellknownListName
