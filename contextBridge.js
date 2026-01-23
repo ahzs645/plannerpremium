@@ -67,34 +67,42 @@
 
   // Get To Do list name from DOM
   function getToDoListNameFromDom() {
-    // Try various selectors for list name in To Do
-    // The h1 heading typically shows the current list name
+    // Try multiple selectors in order of reliability
     const selectors = [
-      'h1',
-      '[role="heading"][aria-level="1"]',
+      '[class*="listTitle"]',                    // Main list title (most reliable)
+      '[class*="ListTitle"]',                    // Alternative casing
       '[data-automationid="ListHeaderName"]',
       '[class*="listName"]',
       '[class*="ListName"]',
-      '[class*="ListHeader"] span',
-      '[class*="listHeader"] span'
+      '[aria-selected="true"]',                  // Selected sidebar item (needs cleanup)
     ];
 
     for (const selector of selectors) {
       try {
-        const els = document.querySelectorAll(selector);
-        for (const el of els) {
-          const text = el.textContent?.trim();
-          // Filter out generic titles and ensure it's a real list name
-          if (text && text.length > 0 && text.length < 100 &&
-              !text.toLowerCase().includes('microsoft to do') &&
-              !text.toLowerCase().includes('to-do')) {
-            console.log('[Planner Exporter] Found To Do list name:', text);
-            return text;
+        const el = document.querySelector(selector);
+        if (el) {
+          let name = el.textContent?.trim();
+
+          // Clean up sidebar text (removes "Shared List" and task count)
+          // "Spark LabShared List2" → "Spark Lab"
+          if (selector.includes('aria-selected')) {
+            name = name.replace(/Shared List\d*$/, '').replace(/\d+$/, '').trim();
+          }
+
+          // Filter out generic titles
+          if (name && name.length > 0 && name.length < 100 &&
+              !name.toLowerCase().includes('microsoft to do') &&
+              !name.toLowerCase().includes('to-do')) {
+            console.log('[Planner Exporter] Found To Do list name:', name, '(selector:', selector, ')');
+            return name;
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error('[Planner Exporter] Selector error:', selector, e);
+      }
     }
 
+    console.log('[Planner Exporter] Could not find To Do list name');
     return null;
   }
 

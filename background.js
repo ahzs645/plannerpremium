@@ -92,7 +92,8 @@ const TOKEN_KEYS = {
   GRAPH: 'plannerGraphToken',
   PSS: 'plannerPssToken',
   PSS_PROJECT: 'plannerPssProjectId',
-  TODO: 'todoToken',
+  TODO: 'todoSubstrateToken',
+  TODO_TIMESTAMP: 'todoSubstrateTokenTimestamp',
   TODO_LIST: 'todoListId'
 };
 
