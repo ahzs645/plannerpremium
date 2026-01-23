@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const bucketMappingSection = document.getElementById('bucket-mapping');
   const listSelectionSection = document.getElementById('list-selection');
   const todoListSelect = document.getElementById('todo-list-select');
+  const btnRefreshConnection = document.getElementById('btn-refresh-connection');
 
   // State
   let parsedTasks = [];
@@ -93,6 +94,11 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     // Service selection
     document.querySelectorAll('input[name="service-type"]').forEach(radio => {
       radio.addEventListener('change', handleServiceChange);
+    });
+
+    // Refresh connection button
+    btnRefreshConnection.addEventListener('click', () => {
+      fetchExistingData();
     });
 
     // Upload zone
@@ -179,7 +185,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
           serviceStatusEl.className = 'service-status success';
         } else {
           console.error('[Import] Failed to get To Do session:', response.error);
-          serviceStatusEl.textContent = response.error || 'Failed to connect to To Do';
+          serviceStatusEl.innerHTML = `<strong>Error:</strong> ${response.error || 'Failed to connect to To Do'}`;
           serviceStatusEl.className = 'service-status error';
         }
       } else {
@@ -201,13 +207,13 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
           serviceStatusEl.className = 'service-status success';
         } else {
           console.error('[Import] Failed to get Planner session:', response.error);
-          serviceStatusEl.textContent = response.error || 'Failed to connect to Planner';
+          serviceStatusEl.innerHTML = `<strong>Error:</strong> ${response.error || 'Failed to connect to Planner'}`;
           serviceStatusEl.className = 'service-status error';
         }
       }
     } catch (error) {
       console.error('[Import] Error fetching session:', error);
-      serviceStatusEl.textContent = 'Failed to connect. Please refresh the page.';
+      serviceStatusEl.innerHTML = '<strong>Error:</strong> Failed to connect. Please refresh the page.';
       serviceStatusEl.className = 'service-status error';
     }
   }

@@ -622,12 +622,13 @@ async function getFreshToDoToken() {
   const data = await chrome.storage.local.get(['todoSubstrateToken', 'todoSubstrateTokenTimestamp']);
   if (data.todoSubstrateToken) {
     const tokenAge = Date.now() - (data.todoSubstrateTokenTimestamp || 0);
-    const ONE_HOUR = 60 * 60 * 1000;
-    if (tokenAge < ONE_HOUR) {
+    // Use 45 minutes threshold - tokens typically expire after ~1 hour
+    const MAX_TOKEN_AGE = 45 * 60 * 1000; // 45 minutes
+    if (tokenAge < MAX_TOKEN_AGE) {
       console.log('[Background] Using stored To Do token (age:', Math.round(tokenAge / 1000), 'seconds)');
       return data.todoSubstrateToken;
     }
-    console.log('[Background] Stored token is too old:', Math.round(tokenAge / 1000), 'seconds');
+    console.log('[Background] Stored token is too old:', Math.round(tokenAge / 1000), 'seconds, max age:', MAX_TOKEN_AGE / 1000);
   }
   return null;
 }
@@ -1381,10 +1382,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         let token = await getFreshToDoToken();
 
         if (!token) {
-          sendResponse({
-            success: false,
-            error: 'No To Do token found. Please navigate to Microsoft To Do and interact with the page first.'
-          });
+          // Check if there's an expired token to give better guidance
+          const data = await chrome.storage.local.get(['todoSubstrateToken', 'todoSubstrateTokenTimestamp']);
+          if (data.todoSubstrateToken) {
+            const tokenAge = Math.round((Date.now() - (data.todoSubstrateTokenTimestamp || 0)) / 1000 / 60);
+            sendResponse({
+              success: false,
+              error: `Token expired (${tokenAge} min old). Please open to-do.office.com, interact with the page (scroll, click a task), then try again.`
+            });
+          } else {
+            sendResponse({
+              success: false,
+              error: 'No token found. Please open to-do.office.com and interact with the page first.'
+            });
+          }
           return;
         }
 
@@ -1410,7 +1421,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
       } catch (error) {
         console.error('[Background] getToDoImportSession error:', error);
-        sendResponse({ success: false, error: error.message });
+        // Provide actionable error message
+        if (error.message.includes('401') || error.message.includes('Max retries')) {
+          sendResponse({
+            success: false,
+            error: 'Authentication failed. Please open to-do.office.com, scroll or click on tasks, then try again.'
+          });
+        } else {
+          sendResponse({ success: false, error: error.message });
+        }
       }
     })();
     return true;
