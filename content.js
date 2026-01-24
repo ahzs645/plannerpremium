@@ -535,21 +535,38 @@
           plannerContext.listId = event.data.listId;
         }
 
-        // Store directly in chrome.storage for immediate access
-        chrome.storage.local.set({
+        // Build storage object
+        const storageData = {
           todoSubstrateToken: event.data.token,
           todoSubstrateTokenTimestamp: event.data.timestamp || Date.now()
-        }).catch(() => {});
+        };
+
+        // Also store X-AnchorMailbox if available (critical for Substrate API)
+        if (event.data.anchorMailbox) {
+          storageData.todoAnchorMailbox = event.data.anchorMailbox;
+          console.log('[PlannerExporter] X-AnchorMailbox captured:', event.data.anchorMailbox);
+        }
+
+        // Store directly in chrome.storage for immediate access
+        chrome.storage.local.set(storageData).then(() => {
+          console.log('[PlannerExporter] To Do Substrate token saved to chrome.storage.local');
+        }).catch((err) => {
+          console.error('[PlannerExporter] Failed to save token to storage:', err);
+        });
 
         // Also store in background.js for centralized access
         chrome.runtime.sendMessage({
           action: 'storeToken',
           type: 'TODO',
           token: event.data.token,
-          metadata: { listId: event.data.listId, timestamp: event.data.timestamp }
+          metadata: {
+            listId: event.data.listId,
+            anchorMailbox: event.data.anchorMailbox,
+            timestamp: event.data.timestamp
+          }
         }).catch(() => {});
 
-        console.log('[PlannerExporter] To Do Substrate token stored');
+        console.log('[PlannerExporter] To Do Substrate token received from page');
       }
     });
   }

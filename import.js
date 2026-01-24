@@ -680,6 +680,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
           action: 'createToDoTask',
           listId: selectedListId,
           token: importSession.token,
+          anchorMailbox: importSession.anchorMailbox, // Include X-AnchorMailbox for Substrate API
           taskData: {
             title: task.title,
             priority: task.priority, // High, Normal, Low
@@ -702,6 +703,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
                   action: 'addToDoChecklistItem',
                   taskId: taskId,
                   token: importSession.token,
+                  anchorMailbox: importSession.anchorMailbox,
                   text: item,
                   isCompleted: false
                 });

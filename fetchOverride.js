@@ -21,6 +21,7 @@
   window.__todoListId = null;
   window.__todoToken = null;
   window.__todoTokenCapturedAt = null;
+  window.__todoAnchorMailbox = null; // User's email for Substrate API routing
 
   const originalFetch = window.fetch;
 
@@ -47,6 +48,31 @@
     }
 
     return authHeader;
+  }
+
+  // Helper to extract X-AnchorMailbox header (needed for Substrate API)
+  function extractAnchorMailbox(config, resource) {
+    let anchorMailbox = null;
+
+    if (config && config.headers) {
+      if (config.headers instanceof Headers) {
+        anchorMailbox = config.headers.get('X-AnchorMailbox') || config.headers.get('x-anchormailbox');
+      } else if (Array.isArray(config.headers)) {
+        const entry = config.headers.find(([key]) =>
+          key.toLowerCase() === 'x-anchormailbox'
+        );
+        if (entry) anchorMailbox = entry[1];
+      } else if (typeof config.headers === 'object') {
+        anchorMailbox = config.headers['X-AnchorMailbox'] || config.headers['x-anchormailbox'];
+      }
+    }
+
+    // Also check Request object headers
+    if (!anchorMailbox && resource instanceof Request) {
+      anchorMailbox = resource.headers.get('X-AnchorMailbox') || resource.headers.get('x-anchormailbox');
+    }
+
+    return anchorMailbox;
   }
 
   // Extract project ID from PSS API URL
@@ -95,6 +121,7 @@
     // Check if this is a To Do Substrate API call
     if (url && url.includes('substrate.office.com/todob2')) {
       const authHeader = extractAuthHeader(config, resource);
+      const anchorMailbox = extractAnchorMailbox(config, resource);
 
       if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.substring(7);
@@ -102,6 +129,9 @@
         if (token.length > 50) { // Substrate tokens are long but may not be JWTs
           window.__todoToken = token;
           window.__todoTokenCapturedAt = Date.now();
+          if (anchorMailbox) {
+            window.__todoAnchorMailbox = anchorMailbox;
+          }
 
           // Extract folder ID if present
           const folderId = extractToDoFolderId(url);
@@ -114,6 +144,7 @@
             detail: {
               token: token,
               listId: folderId,
+              anchorMailbox: anchorMailbox,
               timestamp: Date.now(),
               url: url
             }
@@ -124,10 +155,11 @@
             type: 'TODO_TOKEN_CAPTURED',
             token: token,
             listId: folderId,
+            anchorMailbox: anchorMailbox,
             timestamp: Date.now()
           }, '*');
 
-          console.log('[Planner Exporter] To Do Substrate token captured, folder:', folderId);
+          console.log('[Planner Exporter] To Do Substrate token captured, folder:', folderId, 'anchor:', anchorMailbox);
         }
       }
     }
@@ -221,10 +253,24 @@
 
   XMLHttpRequest.prototype.open = function(method, url, ...rest) {
     this._plannerUrl = url;
+    this._plannerHeaders = {}; // Store headers for later use
     return originalXHROpen.apply(this, [method, url, ...rest]);
   };
 
   XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+    // Store all headers for this request
+    if (this._plannerHeaders) {
+      this._plannerHeaders[name.toLowerCase()] = value;
+    }
+
+    // Capture X-AnchorMailbox for Substrate API
+    if (this._plannerUrl && this._plannerUrl.includes('substrate.office.com/todob2')) {
+      if (name.toLowerCase() === 'x-anchormailbox') {
+        window.__todoAnchorMailbox = value;
+        console.log('[Planner Exporter] X-AnchorMailbox captured via XHR:', value);
+      }
+    }
+
     if (this._plannerUrl && name.toLowerCase() === 'authorization' && value.startsWith('Bearer ')) {
       const token = value.substring(7);
 
@@ -238,7 +284,20 @@
           if (folderId) {
             window.__todoListId = folderId;
           }
-          console.log('[Planner Exporter] To Do Substrate token captured via XHR');
+
+          // Get X-AnchorMailbox if already set
+          const anchorMailbox = this._plannerHeaders ? this._plannerHeaders['x-anchormailbox'] : window.__todoAnchorMailbox;
+
+          // Post message to content script to store in chrome.storage
+          window.postMessage({
+            type: 'TODO_TOKEN_CAPTURED',
+            token: token,
+            listId: folderId,
+            anchorMailbox: anchorMailbox || window.__todoAnchorMailbox,
+            timestamp: Date.now()
+          }, '*');
+
+          console.log('[Planner Exporter] To Do Substrate token captured via XHR, anchor:', anchorMailbox);
         }
       }
 

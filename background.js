@@ -587,6 +587,35 @@ async function fetchPremiumPlanData(projectId, token, tabId) {
 // TO DO API - MICROSOFT TO DO DATA (Substrate API)
 // ============================================
 
+// Extract user email from JWT token (for X-AnchorMailbox fallback)
+function extractEmailFromToken(token) {
+  try {
+    if (!token || typeof token !== 'string') return null;
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+
+    // Decode the payload (second part)
+    const payload = JSON.parse(atob(parts[1]));
+
+    // Try common claims that contain the user's email
+    const email = payload.upn ||
+                  payload.unique_name ||
+                  payload.preferred_username ||
+                  payload.email ||
+                  payload.sub; // sub sometimes contains email for user tokens
+
+    // Validate it looks like an email
+    if (email && email.includes('@')) {
+      console.log('[Background] Extracted email from token:', email);
+      return email;
+    }
+    return null;
+  } catch (e) {
+    console.log('[Background] Could not extract email from token:', e.message);
+    return null;
+  }
+}
+
 // Map To Do status to percentComplete
 function mapToDoStatus(status) {
   // Substrate API uses different status values
@@ -617,17 +646,21 @@ function mapToDoImportance(importance) {
   return importanceMap[normalizedImportance] || { value: 5, label: 'Medium' };
 }
 
-// Get fresh To Do token from storage or active tab
+// Get fresh To Do token and headers from storage or active tab
 async function getFreshToDoToken() {
   // First try chrome.storage.local
-  const data = await chrome.storage.local.get(['todoSubstrateToken', 'todoSubstrateTokenTimestamp']);
+  const data = await chrome.storage.local.get(['todoSubstrateToken', 'todoSubstrateTokenTimestamp', 'todoAnchorMailbox']);
   if (data.todoSubstrateToken) {
     const tokenAge = Date.now() - (data.todoSubstrateTokenTimestamp || 0);
     // Use 45 minutes threshold - tokens typically expire after ~1 hour
     const MAX_TOKEN_AGE = 45 * 60 * 1000; // 45 minutes
     if (tokenAge < MAX_TOKEN_AGE) {
       console.log('[Background] Using stored To Do token (age:', Math.round(tokenAge / 1000), 'seconds)');
-      return data.todoSubstrateToken;
+      console.log('[Background] X-AnchorMailbox:', data.todoAnchorMailbox || 'not set');
+      return {
+        token: data.todoSubstrateToken,
+        anchorMailbox: data.todoAnchorMailbox || null
+      };
     }
     console.log('[Background] Stored token is too old:', Math.round(tokenAge / 1000), 'seconds, max age:', MAX_TOKEN_AGE / 1000);
   }
@@ -646,7 +679,10 @@ async function getFreshToDoToken() {
             todoSubstrateToken: response.token,
             todoSubstrateTokenTimestamp: Date.now()
           });
-          return response.token;
+          return {
+            token: response.token,
+            anchorMailbox: null
+          };
         }
       } catch (e) {
         // Tab might not have content script loaded
@@ -660,31 +696,52 @@ async function getFreshToDoToken() {
 }
 
 // Substrate API fetch wrapper with retry logic
-async function substrateFetch(endpoint, token, maxRetries = 3) {
+// tokenData can be a string (token only) or object { token, anchorMailbox }
+async function substrateFetch(endpoint, tokenData, maxRetries = 3) {
   const url = endpoint.startsWith('http') ? endpoint : `${TODO_SUBSTRATE_API}${endpoint}`;
   console.log('[Background] Substrate fetch:', url);
 
-  let currentToken = token;
+  // Handle both string token and token object
+  let currentToken = typeof tokenData === 'string' ? tokenData : tokenData?.token;
+  let anchorMailbox = typeof tokenData === 'object' ? tokenData?.anchorMailbox : null;
   let lastError = null;
+
+  // If no anchorMailbox, try to extract email from token as fallback
+  if (!anchorMailbox && currentToken) {
+    anchorMailbox = extractEmailFromToken(currentToken);
+    if (anchorMailbox) {
+      console.log('[Background] Using email from token as X-AnchorMailbox fallback:', anchorMailbox);
+    }
+  }
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const response = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${currentToken}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        }
-      });
+      // Build headers
+      const headers = {
+        'Authorization': `Bearer ${currentToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      };
+
+      // Add X-AnchorMailbox if available (critical for Substrate API routing)
+      if (anchorMailbox) {
+        headers['X-AnchorMailbox'] = anchorMailbox;
+        console.log('[Background] Using X-AnchorMailbox:', anchorMailbox);
+      }
+
+      const response = await fetch(url, { headers });
 
       if (response.status === 401) {
         console.log(`[Background] 401 Unauthorized, attempt ${attempt + 1}/${maxRetries}`);
 
-        // Try to get a fresh token from storage
-        const freshToken = await getFreshToDoToken();
-        if (freshToken && freshToken !== currentToken) {
+        // Try to get fresh token and headers from storage
+        const freshTokenData = await getFreshToDoToken();
+        if (freshTokenData && freshTokenData.token && freshTokenData.token !== currentToken) {
           console.log('[Background] Got fresh token from storage, retrying...');
-          currentToken = freshToken;
+          currentToken = freshTokenData.token;
+          if (freshTokenData.anchorMailbox) {
+            anchorMailbox = freshTokenData.anchorMailbox;
+          }
           // Wait a bit before retrying
           await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
           continue;
@@ -694,9 +751,12 @@ async function substrateFetch(endpoint, token, maxRetries = 3) {
         if (attempt < maxRetries - 1) {
           console.log('[Background] Waiting for token capture...');
           await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          const newerToken = await getFreshToDoToken();
-          if (newerToken) {
-            currentToken = newerToken;
+          const newerTokenData = await getFreshToDoToken();
+          if (newerTokenData && newerTokenData.token) {
+            currentToken = newerTokenData.token;
+            if (newerTokenData.anchorMailbox) {
+              anchorMailbox = newerTokenData.anchorMailbox;
+            }
           }
           continue;
         }
@@ -721,7 +781,8 @@ async function substrateFetch(endpoint, token, maxRetries = 3) {
   throw lastError || new Error('Max retries exceeded');
 }
 
-async function fetchToDoListData(listId, listName, token, tabId) {
+// tokenData can be string (token only) or object { token, anchorMailbox }
+async function fetchToDoListData(listId, listName, tokenData, tabId) {
   console.log('[Background] Fetching To Do data via Substrate API...');
   console.log('[Background] List ID:', listId);
   console.log('[Background] List Name:', listName);
@@ -733,7 +794,7 @@ async function fetchToDoListData(listId, listName, token, tabId) {
   let targetList = null;
 
   try {
-    const listsData = await substrateFetch('/taskfolders?maxPageSize=200', token);
+    const listsData = await substrateFetch('/taskfolders?maxPageSize=200', tokenData);
     // Substrate API uses PascalCase - 'Value' not 'value'
     lists = listsData.Value || listsData.value || listsData || [];
     console.log('[Background] Found', lists.length, 'To Do lists');
@@ -808,7 +869,7 @@ async function fetchToDoListData(listId, listName, token, tabId) {
 
     try {
       // Fetch tasks for this folder from Substrate API
-      const tasksData = await substrateFetch(`/taskfolders/${folderId}/tasks?maxPageSize=200`, token);
+      const tasksData = await substrateFetch(`/taskfolders/${folderId}/tasks?maxPageSize=200`, tokenData);
       // Substrate API uses PascalCase - 'Value' not 'value'
       let listTasks = tasksData.Value || tasksData.value || tasksData || [];
 
@@ -961,8 +1022,18 @@ function mapPriorityToImportance(priority) {
 }
 
 // Create a task in To Do
-async function createToDoTask(token, listId, taskData) {
+// tokenData can be string (token only) or object { token, anchorMailbox }
+async function createToDoTask(tokenData, listId, taskData) {
   console.log('[Background] Creating To Do task in list:', listId);
+
+  // Handle both string token and token object
+  const token = typeof tokenData === 'string' ? tokenData : tokenData?.token;
+  let anchorMailbox = typeof tokenData === 'object' ? tokenData?.anchorMailbox : null;
+
+  // Fallback: extract email from token if no anchorMailbox
+  if (!anchorMailbox && token) {
+    anchorMailbox = extractEmailFromToken(token);
+  }
 
   const payload = {
     Subject: taskData.title || taskData.Subject || 'Untitled Task',
@@ -996,15 +1067,24 @@ async function createToDoTask(token, listId, taskData) {
     };
   }
 
+  // Build headers
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json'
+  };
+
+  // Add X-AnchorMailbox if available
+  if (anchorMailbox) {
+    headers['X-AnchorMailbox'] = anchorMailbox;
+    console.log('[Background] Using X-AnchorMailbox for createToDoTask:', anchorMailbox);
+  }
+
   const response = await fetch(
     `${TODO_SUBSTRATE_API}/taskfolders/${listId}/tasks`,
     {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
+      headers: headers,
       body: JSON.stringify(payload)
     }
   );
@@ -1019,18 +1099,36 @@ async function createToDoTask(token, listId, taskData) {
 }
 
 // Add a checklist item (subtask) to a task
-async function addToDoChecklistItem(token, taskId, stepText, isCompleted = false) {
+// tokenData can be string (token only) or object { token, anchorMailbox }
+async function addToDoChecklistItem(tokenData, taskId, stepText, isCompleted = false) {
   console.log('[Background] Adding checklist item to task:', taskId);
+
+  // Handle both string token and token object
+  const token = typeof tokenData === 'string' ? tokenData : tokenData?.token;
+  let anchorMailbox = typeof tokenData === 'object' ? tokenData?.anchorMailbox : null;
+
+  // Fallback: extract email from token if no anchorMailbox
+  if (!anchorMailbox && token) {
+    anchorMailbox = extractEmailFromToken(token);
+  }
+
+  // Build headers
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json'
+  };
+
+  // Add X-AnchorMailbox if available
+  if (anchorMailbox) {
+    headers['X-AnchorMailbox'] = anchorMailbox;
+  }
 
   const response = await fetch(
     `${TODO_SUBSTRATE_API}/tasks/${taskId}/subtasks`,
     {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
+      headers: headers,
       body: JSON.stringify({
         Subject: stepText,
         IsCompleted: isCompleted
@@ -1048,7 +1146,8 @@ async function addToDoChecklistItem(token, taskId, stepText, isCompleted = false
 }
 
 // Import multiple tasks to To Do
-async function importTasksToToDo(token, listId, tasks, tabId) {
+// tokenData can be string (token only) or object { token, anchorMailbox }
+async function importTasksToToDo(tokenData, listId, tasks, tabId) {
   console.log('[Background] Importing', tasks.length, 'tasks to To Do list:', listId);
 
   const results = {
@@ -1068,7 +1167,7 @@ async function importTasksToToDo(token, listId, tasks, tabId) {
 
     try {
       // Create the main task
-      const createdTask = await createToDoTask(token, listId, taskData);
+      const createdTask = await createToDoTask(tokenData, listId, taskData);
       const taskId = createdTask.Id || createdTask.id;
 
       // Add checklist items if any
@@ -1077,7 +1176,7 @@ async function importTasksToToDo(token, listId, tasks, tabId) {
           const itemText = item.title || item.Subject || item.text || item;
           const isChecked = item.isChecked || item.IsCompleted || item.checked || false;
           try {
-            await addToDoChecklistItem(token, taskId, itemText, isChecked);
+            await addToDoChecklistItem(tokenData, taskId, itemText, isChecked);
           } catch (err) {
             console.warn('[Background] Failed to add checklist item:', err.message);
           }
@@ -1235,9 +1334,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     // Try to get fresh token from storage if not provided or seems stale
     (async () => {
+      let tokenData = null;
       if (!token) {
         console.log('[Background] No token provided, checking storage...');
-        token = await getFreshToDoToken();
+        tokenData = await getFreshToDoToken();
+        token = tokenData?.token;
+      } else {
+        // Token was provided, but we still need anchorMailbox
+        const storedData = await chrome.storage.local.get(['todoAnchorMailbox']);
+        tokenData = { token, anchorMailbox: storedData.todoAnchorMailbox };
       }
 
       if (!token) {
@@ -1259,7 +1364,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         progress: { status: 'fetching', message: `Fetching "${listName || 'To Do'}" list...` }
       });
 
-      fetchToDoListData(listId, listName, token, targetTabId)
+      // Pass tokenData (with anchorMailbox) instead of just token
+      fetchToDoListData(listId, listName, tokenData, targetTabId)
         .then(data => {
           const listTitle = data.plan?.title || listName || 'To Do';
           updateExtractionState({
@@ -1285,13 +1391,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Create a single To Do task
   if (request.action === 'createToDoTask') {
-    const { listId, taskData } = request;
+    const { listId, taskData, anchorMailbox: requestAnchorMailbox } = request;
     let { token } = request;
 
     (async () => {
-      // Get token from storage if not provided
+      // Get token and headers from storage if not provided
+      let tokenData = null;
       if (!token) {
-        token = await getFreshToDoToken();
+        tokenData = await getFreshToDoToken();
+        token = tokenData?.token;
+      } else {
+        // Use anchorMailbox from request if provided, otherwise get from storage
+        const storedData = await chrome.storage.local.get(['todoAnchorMailbox']);
+        tokenData = { token, anchorMailbox: requestAnchorMailbox || storedData.todoAnchorMailbox };
       }
       if (!token) {
         sendResponse({ success: false, error: 'No token available' });
@@ -1299,7 +1411,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       try {
-        const createdTask = await createToDoTask(token, listId, taskData);
+        const createdTask = await createToDoTask(tokenData, listId, taskData);
         sendResponse({ success: true, data: createdTask });
       } catch (err) {
         console.error('[Background] createToDoTask error:', err);
@@ -1311,12 +1423,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Add checklist item to a To Do task
   if (request.action === 'addToDoChecklistItem') {
-    const { taskId, text, isCompleted } = request;
+    const { taskId, text, isCompleted, anchorMailbox: requestAnchorMailbox } = request;
     let { token } = request;
 
     (async () => {
+      let tokenData = null;
       if (!token) {
-        token = await getFreshToDoToken();
+        tokenData = await getFreshToDoToken();
+        token = tokenData?.token;
+      } else {
+        // Use anchorMailbox from request if provided, otherwise get from storage
+        const storedData = await chrome.storage.local.get(['todoAnchorMailbox']);
+        tokenData = { token, anchorMailbox: requestAnchorMailbox || storedData.todoAnchorMailbox };
       }
       if (!token) {
         sendResponse({ success: false, error: 'No token available' });
@@ -1324,7 +1442,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       try {
-        const item = await addToDoChecklistItem(token, taskId, text, isCompleted || false);
+        const item = await addToDoChecklistItem(tokenData, taskId, text, isCompleted || false);
         sendResponse({ success: true, data: item });
       } catch (err) {
         console.error('[Background] addToDoChecklistItem error:', err);
@@ -1341,8 +1459,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const targetTabId = request.tabId || tabId;
 
     (async () => {
+      let tokenData = null;
       if (!token) {
-        token = await getFreshToDoToken();
+        tokenData = await getFreshToDoToken();
+        token = tokenData?.token;
+      } else {
+        const storedData = await chrome.storage.local.get(['todoAnchorMailbox']);
+        tokenData = { token, anchorMailbox: storedData.todoAnchorMailbox };
       }
       if (!token) {
         sendResponse({ success: false, error: 'No token available' });
@@ -1350,7 +1473,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       try {
-        const results = await importTasksToToDo(token, listId, tasks, targetTabId);
+        const results = await importTasksToToDo(tokenData, listId, tasks, targetTabId);
         sendResponse({ success: true, data: results });
       } catch (err) {
         console.error('[Background] importTasksToToDo error:', err);
@@ -1404,10 +1527,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getToDoImportSession') {
     (async () => {
       try {
-        // Get stored To Do token
-        let token = await getFreshToDoToken();
+        // Get stored To Do token and headers
+        const tokenData = await getFreshToDoToken();
 
-        if (!token) {
+        if (!tokenData || !tokenData.token) {
           // Check if there's an expired token to give better guidance
           const data = await chrome.storage.local.get(['todoSubstrateToken', 'todoSubstrateTokenTimestamp']);
           if (data.todoSubstrateToken) {
@@ -1425,8 +1548,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
 
-        // Fetch all task folders (lists)
-        const listsData = await substrateFetch('/taskfolders?maxPageSize=200', token);
+        // Fetch all task folders (lists) - pass full tokenData object for headers
+        const listsData = await substrateFetch('/taskfolders?maxPageSize=200', tokenData);
         const lists = listsData.Value || listsData.value || [];
 
         console.log('[Background] getToDoImportSession: Found', lists.length, 'lists');
@@ -1435,7 +1558,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           success: true,
           data: {
             serviceType: 'todo',
-            token: token,
+            token: tokenData.token,
+            anchorMailbox: tokenData.anchorMailbox,
             lists: lists.map(l => ({
               id: l.Id || l.id,
               name: l.Name || l.DisplayName || l.name || l.displayName || 'Unknown',
