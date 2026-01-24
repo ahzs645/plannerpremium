@@ -889,7 +889,98 @@
       sendResponse({ success: true, buckets });
       return true;
     }
+
+    // ============================================
+    // TO DO PAGE API HANDLERS
+    // These forward API calls to the page context where CORS doesn't apply
+    // ============================================
+
+    if (request.action === 'getToDoListsViaPage') {
+      callPageApi('TODO_API_GET_LISTS', {})
+        .then(result => sendResponse(result))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+
+    if (request.action === 'createToDoTaskViaPage') {
+      callPageApi('TODO_API_CREATE_TASK', {
+        listId: request.listId,
+        taskData: request.taskData
+      })
+        .then(result => sendResponse(result))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+
+    if (request.action === 'addToDoSubtaskViaPage') {
+      callPageApi('TODO_API_ADD_SUBTASK', {
+        taskId: request.taskId,
+        text: request.text,
+        isCompleted: request.isCompleted || false
+      })
+        .then(result => sendResponse(result))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
   });
+
+  // ============================================
+  // PAGE API COMMUNICATION
+  // ============================================
+
+  // Store pending page API requests
+  const pendingPageApiRequests = new Map();
+  let pageApiRequestId = 0;
+
+  // Listen for responses from the page API
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data?.type !== 'TODO_API_RESPONSE') return;
+
+    const { requestId, success, data, error } = event.data;
+    const pending = pendingPageApiRequests.get(requestId);
+
+    if (pending) {
+      pendingPageApiRequests.delete(requestId);
+      if (success) {
+        pending.resolve({ success: true, data });
+      } else {
+        pending.reject(new Error(error || 'Unknown error'));
+      }
+    }
+  });
+
+  // Call the page API and wait for response
+  function callPageApi(type, data, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+      const requestId = `req_${++pageApiRequestId}_${Date.now()}`;
+
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        pendingPageApiRequests.delete(requestId);
+        reject(new Error('Page API request timed out'));
+      }, timeout);
+
+      // Store the pending request
+      pendingPageApiRequests.set(requestId, {
+        resolve: (result) => {
+          clearTimeout(timeoutId);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timeoutId);
+          reject(err);
+        }
+      });
+
+      // Post message to page context
+      window.postMessage({
+        type: type,
+        requestId: requestId,
+        ...data
+      }, '*');
+    });
+  }
 
   // ============================================
   // INITIALIZATION
@@ -902,6 +993,13 @@
       console.log('[PlannerExporter] fetchOverride.js injected');
       await injectScript('contextBridge.js');
       console.log('[PlannerExporter] contextBridge.js injected');
+
+      // Inject todoPageApi.js for To Do pages
+      if (window.location.hostname.includes('to-do.office.com')) {
+        await injectScript('todoPageApi.js');
+        console.log('[PlannerExporter] todoPageApi.js injected for To Do');
+      }
+
       startContextMonitor();
       console.log('[PlannerExporter] Context monitor started');
     } catch (err) {

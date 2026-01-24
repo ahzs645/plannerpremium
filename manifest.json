@@ -41,6 +41,7 @@
       "resources": [
         "contextBridge.js",
         "fetchOverride.js",
+        "todoPageApi.js",
         "results.html",
         "results.js",
         "results.css",

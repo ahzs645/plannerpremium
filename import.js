@@ -63,6 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let serviceType = 'planner'; // 'planner' or 'todo'
   let todoLists = []; // Available To Do lists
   let selectedListId = null; // Selected To Do list for import
+  let todoTabId = null; // ID of the active To Do tab for page API calls
 
   // CSV Template for Planner Premium
   const CSV_TEMPLATE_PLANNER = `OutlineNumber,Title,Bucket,Priority,StartDate,DueDate,AssignedTo,Description,ChecklistItems
@@ -101,12 +102,15 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       fetchExistingData();
     });
 
-    // Double-click to clear token and refresh (helps when token is stale)
+    // Double-click to clear state and show guidance
     btnRefreshConnection.addEventListener('dblclick', async () => {
       if (serviceType === 'todo') {
+        todoTabId = null;
+        todoLists = [];
         await chrome.storage.local.remove(['todoSubstrateToken', 'todoSubstrateTokenTimestamp']);
-        serviceStatusEl.innerHTML = 'Token cleared. Now go to <a href="https://to-do.office.com" target="_blank">to-do.office.com</a>, click on a task, then click Refresh.';
+        serviceStatusEl.innerHTML = 'Connection reset. Please:<br>1. Open <a href="https://to-do.office.com" target="_blank">to-do.office.com</a> in a tab<br>2. Scroll or click on a task<br>3. Click Refresh Connection';
         serviceStatusEl.className = 'service-status info';
+        todoListSelect.innerHTML = '<option value="">Select a list...</option>';
       }
     });
 
@@ -161,44 +165,98 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     fetchExistingData();
   }
 
+  // Find an active To Do tab for page API calls
+  async function findToDoTab() {
+    try {
+      const tabs = await chrome.tabs.query({ url: '*://to-do.office.com/*' });
+      if (tabs.length > 0) {
+        todoTabId = tabs[0].id;
+        console.log('[Import] Found To Do tab:', todoTabId);
+        return tabs[0];
+      }
+    } catch (e) {
+      console.error('[Import] Error finding To Do tab:', e);
+    }
+    return null;
+  }
+
+  // Send message to To Do tab's content script (for page API calls)
+  async function sendToDoPageMessage(action, data = {}) {
+    if (!todoTabId) {
+      const tab = await findToDoTab();
+      if (!tab) {
+        throw new Error('No To Do tab open. Please open to-do.office.com in a tab first.');
+      }
+    }
+
+    try {
+      const response = await chrome.tabs.sendMessage(todoTabId, { action, ...data });
+      return response;
+    } catch (error) {
+      // Tab might have been closed, try to find a new one
+      todoTabId = null;
+      const tab = await findToDoTab();
+      if (!tab) {
+        throw new Error('To Do tab not found. Please open to-do.office.com and try again.');
+      }
+      return await chrome.tabs.sendMessage(todoTabId, { action, ...data });
+    }
+  }
+
   async function fetchExistingData() {
     serviceStatusEl.textContent = 'Connecting...';
     serviceStatusEl.className = 'service-status info';
 
     try {
       if (serviceType === 'todo') {
-        // Fetch To Do session (lists)
-        const response = await chrome.runtime.sendMessage({ action: 'getToDoImportSession' });
-        if (response.success) {
-          importSession = response.data;
-          todoLists = response.data.lists || [];
-          destinationUrl = response.data.todoUrl || 'https://to-do.office.com';
+        // First, find a To Do tab
+        const tab = await findToDoTab();
+        if (!tab) {
+          serviceStatusEl.innerHTML = '<strong>Not connected:</strong> Please open <a href="https://to-do.office.com" target="_blank">to-do.office.com</a> in a tab and interact with the page (scroll, click) first.';
+          serviceStatusEl.className = 'service-status error';
+          return;
+        }
 
-          // Populate list dropdown
-          todoListSelect.innerHTML = '<option value="">Select a list...</option>';
-          todoLists.forEach(list => {
-            const option = document.createElement('option');
-            option.value = list.id;
-            option.textContent = list.name;
-            if (list.wellknownListName === 'defaultList') {
-              option.textContent += ' (Default)';
-            }
-            todoListSelect.appendChild(option);
-          });
+        // Use the page API to get lists (bypasses CORS issues)
+        try {
+          const response = await sendToDoPageMessage('getToDoListsViaPage');
 
-          console.log('[Import] To Do session initialized:', {
-            lists: todoLists.length
-          });
+          if (response && response.success) {
+            todoLists = response.data || [];
+            destinationUrl = 'https://to-do.office.com';
+            importSession = { serviceType: 'todo', lists: todoLists };
 
-          serviceStatusEl.textContent = `Connected to To Do (${todoLists.length} lists available)`;
-          serviceStatusEl.className = 'service-status success';
-        } else {
-          console.error('[Import] Failed to get To Do session:', response.error);
-          serviceStatusEl.innerHTML = `<strong>Error:</strong> ${response.error || 'Failed to connect to To Do'}`;
+            // Populate list dropdown
+            todoListSelect.innerHTML = '<option value="">Select a list...</option>';
+            todoLists.forEach(list => {
+              const option = document.createElement('option');
+              option.value = list.id;
+              option.textContent = list.name;
+              if (list.wellknownListName === 'defaultList') {
+                option.textContent += ' (Default)';
+              }
+              todoListSelect.appendChild(option);
+            });
+
+            console.log('[Import] To Do session initialized via page API:', {
+              lists: todoLists.length
+            });
+
+            serviceStatusEl.textContent = `Connected to To Do (${todoLists.length} lists available)`;
+            serviceStatusEl.className = 'service-status success';
+          } else {
+            const errorMsg = response?.error || 'Failed to get lists';
+            console.error('[Import] Page API error:', errorMsg);
+            serviceStatusEl.innerHTML = `<strong>Error:</strong> ${errorMsg}. Please interact with the To Do page (scroll, click a task) first.`;
+            serviceStatusEl.className = 'service-status error';
+          }
+        } catch (pageApiError) {
+          console.error('[Import] Page API failed:', pageApiError);
+          serviceStatusEl.innerHTML = `<strong>Error:</strong> ${pageApiError.message}`;
           serviceStatusEl.className = 'service-status error';
         }
       } else {
-        // Fetch Planner Premium session (existing behavior)
+        // Fetch Planner Premium session (existing behavior via background.js)
         const response = await chrome.runtime.sendMessage({ action: 'getImportSession' });
         if (response.success) {
           importSession = response.data;
@@ -627,9 +685,10 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     const hasErrors = !validationErrors.classList.contains('hidden');
 
     if (serviceType === 'todo') {
-      const hasSession = importSession && importSession.token;
+      // For To Do, we just need lists loaded and one selected (page API handles auth)
+      const hasLists = todoLists && todoLists.length > 0;
       const hasListSelected = selectedListId && selectedListId.length > 0;
-      btnStartImport.disabled = hasErrors || !hasSession || !hasListSelected || parsedTasks.length === 0;
+      btnStartImport.disabled = hasErrors || !hasLists || !hasListSelected || parsedTasks.length === 0;
     } else {
       const hasSession = importSession && importSession.baseUrl;
       btnStartImport.disabled = hasErrors || !hasSession || parsedTasks.length === 0;
@@ -660,9 +719,20 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
   }
 
   // To Do import - simpler flat structure
+  // Uses page API (via content script) to bypass CORS restrictions
   async function startToDoImport(total, failedItems) {
     let created = 0;
     let failed = 0;
+
+    // Ensure we have a To Do tab
+    if (!todoTabId) {
+      const tab = await findToDoTab();
+      if (!tab) {
+        addLogEntry('Error: No To Do tab open. Please open to-do.office.com first.', 'error');
+        showResults(0, total, 0, parsedTasks.map(t => ({ task: t, error: 'No To Do tab open' })));
+        return;
+      }
+    }
 
     for (let i = 0; i < parsedTasks.length; i++) {
       if (importCancelled) {
@@ -675,12 +745,9 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       progressFill.style.width = `${((i + 1) / total) * 100}%`;
 
       try {
-        // Create task in To Do
-        const response = await chrome.runtime.sendMessage({
-          action: 'createToDoTask',
+        // Create task in To Do via page API
+        const response = await sendToDoPageMessage('createToDoTaskViaPage', {
           listId: selectedListId,
-          token: importSession.token,
-          anchorMailbox: importSession.anchorMailbox, // Include X-AnchorMailbox for Substrate API
           taskData: {
             title: task.title,
             priority: task.priority, // High, Normal, Low
@@ -690,20 +757,17 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
           }
         });
 
-        if (response.success && response.data) {
+        if (response && response.success && response.data) {
           const createdTask = response.data;
           const taskId = createdTask.Id || createdTask.id;
           addLogEntry(`Created: ${task.title}`, 'success');
 
-          // Add checklist items (subtasks in To Do)
+          // Add checklist items (subtasks in To Do) via page API
           if (task.checklistItems.length > 0) {
             for (const item of task.checklistItems) {
               try {
-                await chrome.runtime.sendMessage({
-                  action: 'addToDoChecklistItem',
+                await sendToDoPageMessage('addToDoSubtaskViaPage', {
                   taskId: taskId,
-                  token: importSession.token,
-                  anchorMailbox: importSession.anchorMailbox,
                   text: item,
                   isCompleted: false
                 });
@@ -716,7 +780,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
 
           created++;
         } else {
-          throw new Error(response.error || 'Unknown error');
+          throw new Error(response?.error || 'Unknown error');
         }
       } catch (error) {
         console.error('[Import] Error creating To Do task:', error);
