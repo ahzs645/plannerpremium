@@ -184,6 +184,28 @@ function mapPssPriority(pssPriority) {
   return { value: 5, label: 'Medium' };
 }
 
+// Format a date string to ISO 8601 for Graph API
+function formatDateForGraph(dateStr) {
+  if (!dateStr) return null;
+  try {
+    // Handle various formats: YYYY-MM-DD, MM/DD/YYYY, etc.
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString();
+  } catch (e) {
+    return null;
+  }
+}
+
+// Generate a UUID v4 for Graph API checklist item keys
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 function sendProgressToTab(tabId, progress) {
   // Update extraction state with progress
   updateExtractionState({ progress });
@@ -1580,6 +1602,166 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else {
           sendResponse({ success: false, error: error.message });
         }
+      }
+    })();
+    return true;
+  }
+
+  // Get Planner Basic import session (uses Graph API)
+  if (request.action === 'getBasicImportSession') {
+    (async () => {
+      try {
+        // Get stored Graph token
+        const graphTokenData = await getToken('GRAPH');
+
+        if (!graphTokenData?.token) {
+          sendResponse({
+            success: false,
+            error: 'No Graph API token found. Please navigate to a Basic Plan in Planner first.'
+          });
+          return;
+        }
+
+        // Get stored basic plan ID
+        const storageData = await chrome.storage.local.get(['plannerBasicPlanId']);
+        const planId = storageData.plannerBasicPlanId;
+
+        if (!planId) {
+          sendResponse({
+            success: false,
+            error: 'No Basic Plan detected. Please open a Basic Plan in Planner and interact with it first.'
+          });
+          return;
+        }
+
+        const token = graphTokenData.token;
+
+        // Fetch buckets via Graph API
+        const bucketsResponse = await graphFetch(`/planner/plans/${planId}/buckets`, token);
+        if (!bucketsResponse.ok) {
+          const errorText = await bucketsResponse.text().catch(() => '');
+          throw new Error(`Failed to fetch buckets: ${bucketsResponse.status} ${errorText}`);
+        }
+        const bucketsData = await bucketsResponse.json();
+        const buckets = bucketsData.value || [];
+
+        sendResponse({
+          success: true,
+          data: {
+            planId: planId,
+            token: token,
+            buckets: buckets.map(b => ({ id: b.id, name: b.name, orderHint: b.orderHint })),
+            plannerUrl: 'https://tasks.office.com'
+          }
+        });
+      } catch (error) {
+        console.error('[Background] getBasicImportSession error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Create a task in Planner Basic via Graph API
+  if (request.action === 'createBasicImportTask') {
+    const { planId, token, taskData } = request;
+
+    (async () => {
+      try {
+        const payload = {
+          planId: planId,
+          title: taskData.title || 'Untitled Task',
+          priority: taskData.priority || 5
+        };
+
+        if (taskData.bucketId) {
+          payload.bucketId = taskData.bucketId;
+        }
+
+        if (taskData.dueDateTime) {
+          payload.dueDateTime = formatDateForGraph(taskData.dueDateTime);
+        }
+
+        if (taskData.startDateTime) {
+          payload.startDateTime = formatDateForGraph(taskData.startDateTime);
+        }
+
+        // Assignments - Graph API format: { "userId": { "@odata.type": "...", "orderHint": " !" } }
+        // Note: assignedTo contains emails, but Graph API needs user IDs
+        // For now, we skip assignments since resolving emails to IDs requires additional API calls
+        // TODO: Add user lookup if needed
+
+        const response = await graphFetch(`/planner/tasks`, token, {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw new Error(`Failed to create task: ${response.status} ${errorText}`);
+        }
+
+        const createdTask = await response.json();
+        sendResponse({ success: true, data: createdTask });
+      } catch (error) {
+        console.error('[Background] createBasicImportTask error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Update task details (description + checklist) for Planner Basic
+  if (request.action === 'updateBasicTaskDetails') {
+    const { taskId, token, details } = request;
+
+    (async () => {
+      try {
+        // First, GET the task details to obtain the @odata.etag
+        const detailsResponse = await graphFetch(`/planner/tasks/${taskId}/details`, token);
+        if (!detailsResponse.ok) {
+          throw new Error(`Failed to get task details: ${detailsResponse.status}`);
+        }
+        const currentDetails = await detailsResponse.json();
+        const etag = currentDetails['@odata.etag'];
+
+        // Build the patch payload
+        const patchPayload = {};
+
+        if (details.description) {
+          patchPayload.description = details.description;
+        }
+
+        if (details.checklistItems && details.checklistItems.length > 0) {
+          patchPayload.checklist = {};
+          for (const item of details.checklistItems) {
+            const uuid = generateUUID();
+            patchPayload.checklist[uuid] = {
+              '@odata.type': 'microsoft.graph.plannerChecklistItem',
+              title: item,
+              isChecked: false
+            };
+          }
+        }
+
+        // PATCH the task details with If-Match header
+        const patchResponse = await graphFetch(`/planner/tasks/${taskId}/details`, token, {
+          method: 'PATCH',
+          headers: {
+            'If-Match': etag
+          },
+          body: JSON.stringify(patchPayload)
+        });
+
+        if (!patchResponse.ok && patchResponse.status !== 204) {
+          const errorText = await patchResponse.text().catch(() => '');
+          throw new Error(`Failed to update task details: ${patchResponse.status} ${errorText}`);
+        }
+
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('[Background] updateBasicTaskDetails error:', error);
+        sendResponse({ success: false, error: error.message });
       }
     })();
     return true;

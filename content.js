@@ -496,6 +496,13 @@
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'PLANNER_CONTEXT_UPDATE') {
         plannerContext = event.data.data;
+
+        // Store basic plan context to chrome.storage.local for import page access
+        if (plannerContext?.planType === 'basic' && plannerContext?.planId) {
+          chrome.storage.local.set({
+            plannerBasicPlanId: plannerContext.planId
+          }).catch(() => {});
+        }
       }
 
       // Graph API token captured - forward to background.js

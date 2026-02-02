@@ -26,6 +26,14 @@
           </div>
         </label>
         <label class="service-option">
+          <input type="radio" name="service-type" value="plannerbasic">
+          <div class="service-card">
+            <div class="service-icon">📌</div>
+            <div class="service-name">Planner Basic</div>
+            <div class="service-desc">Flat task list with buckets</div>
+          </div>
+        </label>
+        <label class="service-option">
           <input type="radio" name="service-type" value="todo">
           <div class="service-card">
             <div class="service-icon">✅</div>
@@ -63,6 +71,22 @@
           <li><strong>ChecklistItems</strong>: Checklist items, semicolon-separated</li>
         </ul>
         <button class="btn btn-secondary btn-small" id="btn-download-template">Download Template CSV</button>
+      </div>
+      <div class="upload-info hidden" id="upload-info-basic">
+        <h3>CSV Format (Planner Basic)</h3>
+        <p>Your CSV should have these columns:</p>
+        <code>Title,Bucket,Priority,DueDate,AssignedTo,Description,ChecklistItems</code>
+        <ul>
+          <li><strong>Title</strong> (required): Task name</li>
+          <li><strong>Bucket</strong>: Bucket name</li>
+          <li><strong>Priority</strong>: Urgent, Important, Medium, or Low</li>
+          <li><strong>DueDate</strong>: Date in ISO or MM/DD/YYYY format</li>
+          <li><strong>AssignedTo</strong>: Email addresses, semicolon-separated</li>
+          <li><strong>Description</strong>: Task notes</li>
+          <li><strong>ChecklistItems</strong>: Checklist items, semicolon-separated</li>
+        </ul>
+        <p class="note">Note: Planner Basic does not support hierarchy (subtasks).</p>
+        <button class="btn btn-secondary btn-small" id="btn-download-basic-template">Download Basic Template</button>
       </div>
       <div class="upload-info hidden" id="upload-info-todo">
         <h3>CSV Format (Microsoft To Do)</h3>

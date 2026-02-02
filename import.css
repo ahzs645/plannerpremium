@@ -356,7 +356,8 @@ header h1 {
   color: #d13438;
 }
 
-.preview-table .priority.high {
+.preview-table .priority.high,
+.preview-table .priority.important {
   background: #fff4ce;
   color: #797673;
 }
@@ -588,7 +589,7 @@ header h1 {
 
 .service-options {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 16px;
 }

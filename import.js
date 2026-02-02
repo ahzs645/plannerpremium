@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const fileInput = document.getElementById('file-input');
   const btnBrowse = document.getElementById('btn-browse');
   const btnDownloadTemplate = document.getElementById('btn-download-template');
+  const btnDownloadBasicTemplate = document.getElementById('btn-download-basic-template');
   const btnDownloadToDoTemplate = document.getElementById('btn-download-todo-template');
 
   const previewSummary = document.getElementById('preview-summary');
@@ -46,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Service selection elements
   const serviceStatusEl = document.getElementById('service-status');
   const uploadInfoPlanner = document.getElementById('upload-info-planner');
+  const uploadInfoBasic = document.getElementById('upload-info-basic');
   const uploadInfoToDo = document.getElementById('upload-info-todo');
   const bucketMappingSection = document.getElementById('bucket-mapping');
   const listSelectionSection = document.getElementById('list-selection');
@@ -60,10 +62,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let importSession = null;
   let importCancelled = false;
   let destinationUrl = '';
-  let serviceType = 'planner'; // 'planner' or 'todo'
+  let serviceType = 'planner'; // 'planner', 'plannerbasic', or 'todo'
   let todoLists = []; // Available To Do lists
   let selectedListId = null; // Selected To Do list for import
   let todoTabId = null; // ID of the active To Do tab for page API calls
+  let plannerTabId = null; // ID of the active Planner tab for basic plan imports
 
   // CSV Template for Planner Premium
   const CSV_TEMPLATE_PLANNER = `OutlineNumber,Title,Bucket,Priority,StartDate,DueDate,AssignedTo,Description,ChecklistItems
@@ -74,6 +77,14 @@ document.addEventListener('DOMContentLoaded', () => {
 2.1,Setup development environment,Sprint 1,Urgent,2025-02-01,2025-02-03,dev@company.com,Configure dev environment,Install tools;Configure CI/CD
 2.1.1,Install dependencies,Sprint 1,Medium,2025-02-01,2025-02-02,dev@company.com,Install required packages,
 2.2,Implement core features,Sprint 1,High,2025-02-04,2025-02-20,dev@company.com;dev2@company.com,Build main functionality,`;
+
+  // CSV Template for Planner Basic
+  const CSV_TEMPLATE_BASIC = `Title,Bucket,Priority,DueDate,AssignedTo,Description,ChecklistItems
+Define requirements,Backlog,Important,2025-01-22,pm@company.com,Gather requirements from stakeholders,Interview stakeholders;Document requirements;Review with team
+Create project timeline,Backlog,Medium,2025-01-25,pm@company.com,Build project schedule,
+Setup dev environment,Sprint 1,Urgent,2025-02-03,dev@company.com,Configure dev environment,Install tools;Configure CI/CD
+Implement core features,Sprint 1,Important,2025-02-20,dev@company.com;dev2@company.com,Build main functionality,
+Write documentation,Done,Low,2025-03-01,,Write user documentation,Draft outline;Write content;Review`;
 
   // CSV Template for To Do
   const CSV_TEMPLATE_TODO = `Title,Priority,DueDate,Description,ChecklistItems
@@ -111,6 +122,11 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
         serviceStatusEl.innerHTML = 'Connection reset. Please:<br>1. Open <a href="https://to-do.office.com" target="_blank">to-do.office.com</a> in a tab<br>2. Scroll or click on a task<br>3. Click Refresh Connection';
         serviceStatusEl.className = 'service-status info';
         todoListSelect.innerHTML = '<option value="">Select a list...</option>';
+      } else if (serviceType === 'plannerbasic') {
+        plannerTabId = null;
+        await chrome.storage.local.remove(['plannerGraphToken', 'plannerBasicPlanId']);
+        serviceStatusEl.innerHTML = 'Connection reset. Please:<br>1. Open a Basic Plan in <a href="https://tasks.office.com" target="_blank">Planner</a><br>2. Click on a task or interact with the plan<br>3. Click Refresh Connection';
+        serviceStatusEl.className = 'service-status info';
       }
     });
 
@@ -121,6 +137,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     uploadZone.addEventListener('dragleave', handleDragLeave);
     uploadZone.addEventListener('drop', handleDrop);
     btnDownloadTemplate.addEventListener('click', () => downloadTemplate('planner'));
+    btnDownloadBasicTemplate.addEventListener('click', () => downloadTemplate('plannerbasic'));
     btnDownloadToDoTemplate.addEventListener('click', () => downloadTemplate('todo'));
 
     // To Do list selection
@@ -150,14 +167,20 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     serviceType = e.target.value;
     console.log('[Import] Service type changed to:', serviceType);
 
+    // Hide all upload info sections first
+    uploadInfoPlanner.classList.add('hidden');
+    uploadInfoBasic.classList.add('hidden');
+    uploadInfoToDo.classList.add('hidden');
+
     // Update UI based on service type
     if (serviceType === 'todo') {
-      uploadInfoPlanner.classList.add('hidden');
       uploadInfoToDo.classList.remove('hidden');
       document.getElementById('header-subtitle').textContent = 'Create tasks in Microsoft To Do from a CSV file';
+    } else if (serviceType === 'plannerbasic') {
+      uploadInfoBasic.classList.remove('hidden');
+      document.getElementById('header-subtitle').textContent = 'Create tasks in Microsoft Planner (Basic) from a CSV file';
     } else {
       uploadInfoPlanner.classList.remove('hidden');
-      uploadInfoToDo.classList.add('hidden');
       document.getElementById('header-subtitle').textContent = 'Create tasks in Microsoft Planner from a CSV file';
     }
 
@@ -176,6 +199,21 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       }
     } catch (e) {
       console.error('[Import] Error finding To Do tab:', e);
+    }
+    return null;
+  }
+
+  // Find an active Planner tab for basic plan imports
+  async function findPlannerTab() {
+    try {
+      const tabs = await chrome.tabs.query({ url: ['*://tasks.office.com/*', '*://planner.cloud.microsoft/*'] });
+      if (tabs.length > 0) {
+        plannerTabId = tabs[0].id;
+        console.log('[Import] Found Planner tab:', plannerTabId);
+        return tabs[0];
+      }
+    } catch (e) {
+      console.error('[Import] Error finding Planner tab:', e);
     }
     return null;
   }
@@ -253,6 +291,26 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
         } catch (pageApiError) {
           console.error('[Import] Page API failed:', pageApiError);
           serviceStatusEl.innerHTML = `<strong>Error:</strong> ${pageApiError.message}`;
+          serviceStatusEl.className = 'service-status error';
+        }
+      } else if (serviceType === 'plannerbasic') {
+        // Fetch Planner Basic session via background.js (uses Graph API)
+        const response = await chrome.runtime.sendMessage({ action: 'getBasicImportSession' });
+        if (response.success) {
+          importSession = response.data;
+          existingBuckets = response.data.buckets || [];
+          destinationUrl = response.data.plannerUrl || 'https://tasks.office.com';
+
+          console.log('[Import] Planner Basic session initialized:', {
+            planId: importSession.planId,
+            buckets: existingBuckets.length
+          });
+
+          serviceStatusEl.textContent = `Connected to Planner Basic (${existingBuckets.length} buckets)`;
+          serviceStatusEl.className = 'service-status success';
+        } else {
+          console.error('[Import] Failed to get Planner Basic session:', response.error);
+          serviceStatusEl.innerHTML = `<strong>Error:</strong> ${response.error || 'Failed to connect to Planner'}. Please navigate to a Basic Plan first.`;
           serviceStatusEl.className = 'service-status error';
         }
       } else {
@@ -335,7 +393,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().trim());
 
     // Different required headers based on service type
-    const requiredHeaders = serviceType === 'todo' ? ['title'] : ['outlinenumber', 'title'];
+    const requiredHeaders = (serviceType === 'todo' || serviceType === 'plannerbasic') ? ['title'] : ['outlinenumber', 'title'];
     const missingHeaders = requiredHeaders.filter(h => !headers.includes(h));
 
     if (missingHeaders.length > 0) {
@@ -357,10 +415,10 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       // Normalize field names
       const normalized = {
         rowNumber: i,
-        outlineNumber: task.outlinenumber || task['outline number'] || (serviceType === 'todo' ? String(i) : ''),
+        outlineNumber: task.outlinenumber || task['outline number'] || ((serviceType === 'todo' || serviceType === 'plannerbasic') ? String(i) : ''),
         title: task.title || '',
         bucket: task.bucket || '',
-        priority: normalizePriority(task.priority || '', serviceType === 'todo'),
+        priority: normalizePriority(task.priority || '', serviceType),
         startDate: task.startdate || task['start date'] || '',
         dueDate: task.duedate || task['due date'] || '',
         assignedTo: (task.assignedto || task['assigned to'] || '').split(';').map(e => e.trim()).filter(Boolean),
@@ -369,15 +427,15 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       };
 
       // Validate
-      if (serviceType !== 'todo' && !normalized.outlineNumber) {
+      if (serviceType !== 'todo' && serviceType !== 'plannerbasic' && !normalized.outlineNumber) {
         errors.push(`Row ${i + 1}: Missing OutlineNumber`);
       }
       if (!normalized.title) {
         errors.push(`Row ${i + 1}: Missing Title`);
       }
 
-      // Calculate parent outline (only relevant for Planner)
-      if (serviceType !== 'todo') {
+      // Calculate parent outline (only relevant for Planner Premium)
+      if (serviceType !== 'todo' && serviceType !== 'plannerbasic') {
         normalized.parentOutline = getParentOutline(normalized.outlineNumber);
         normalized.depth = normalized.outlineNumber ? normalized.outlineNumber.split('.').length - 1 : 0;
       } else {
@@ -388,8 +446,8 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       tasks.push(normalized);
     }
 
-    // Sort by outline number (only for Planner)
-    if (serviceType !== 'todo') {
+    // Sort by outline number (only for Planner Premium)
+    if (serviceType !== 'todo' && serviceType !== 'plannerbasic') {
       tasks.sort((a, b) => compareOutlineNumbers(a.outlineNumber, b.outlineNumber));
 
       // Validate hierarchy
@@ -445,21 +503,24 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     return result;
   }
 
-  function normalizePriority(priority, isToDo = false) {
+  function normalizePriority(priority, svcType) {
     const p = priority.toLowerCase().trim();
-    if (isToDo) {
+    if (svcType === 'todo') {
       // To Do uses: High, Normal, Low
       if (p === 'high' || p === 'urgent' || p === 'important') return 'high';
       if (p === 'low') return 'low';
       return 'normal';
     } else {
-      // Planner uses: Urgent, High, Medium, Low
+      // Planner (Premium and Basic) uses: Urgent, Important/High, Medium, Low
       if (p === 'urgent' || p === '1') return 'urgent';
-      if (p === 'high' || p === 'important' || p === '3') return 'high';
+      if (p === 'high' || p === 'important' || p === '3') return 'important';
       if (p === 'low' || p === '9') return 'low';
       return 'medium';
     }
   }
+
+  // Note: Graph API uses these priority values:
+  // 0-1 = Urgent, 2-3 = Important, 4-6 = Medium, 7-9 = Low
 
   function getParentOutline(outlineNumber) {
     if (!outlineNumber) return null;
@@ -492,9 +553,10 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     const subtasks = parsedTasks.filter(t => t.parentOutline);
     const checklistCount = parsedTasks.reduce((sum, t) => sum + t.checklistItems.length, 0);
 
+    const isFlat = serviceType === 'todo' || serviceType === 'plannerbasic';
     document.getElementById('stat-total').textContent = parsedTasks.length;
-    document.getElementById('stat-root').textContent = serviceType === 'todo' ? parsedTasks.length : rootTasks.length;
-    document.getElementById('stat-subtasks').textContent = serviceType === 'todo' ? 'N/A' : subtasks.length;
+    document.getElementById('stat-root').textContent = isFlat ? parsedTasks.length : rootTasks.length;
+    document.getElementById('stat-subtasks').textContent = isFlat ? 'N/A' : subtasks.length;
     document.getElementById('stat-checklists').textContent = checklistCount;
 
     // Show appropriate mapping/selection section based on service type
@@ -503,6 +565,14 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       listSelectionSection.classList.remove('hidden');
       // Hide tree view for To Do (no hierarchy)
       btnViewTree.style.display = 'none';
+    } else if (serviceType === 'plannerbasic') {
+      bucketMappingSection.classList.remove('hidden');
+      listSelectionSection.classList.add('hidden');
+      // No tree view for basic (flat tasks)
+      btnViewTree.style.display = 'none';
+      // Bucket mapping
+      const csvBuckets = [...new Set(parsedTasks.map(t => t.bucket).filter(Boolean))];
+      renderBucketMapping(csvBuckets);
     } else {
       bucketMappingSection.classList.remove('hidden');
       listSelectionSection.classList.add('hidden');
@@ -514,7 +584,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
 
     // Preview table
     renderPreviewTable();
-    if (serviceType !== 'todo') {
+    if (serviceType !== 'todo' && serviceType !== 'plannerbasic') {
       renderPreviewTree();
     }
 
@@ -581,6 +651,16 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
         <th>Due Date</th>
         <th>Checklist</th>
       `;
+    } else if (serviceType === 'plannerbasic') {
+      tableHead.innerHTML = `
+        <th>#</th>
+        <th>Title</th>
+        <th>Bucket</th>
+        <th>Priority</th>
+        <th>Due Date</th>
+        <th>Assigned</th>
+        <th>Checklist</th>
+      `;
     } else {
       tableHead.innerHTML = `
         <th>Outline</th>
@@ -605,6 +685,18 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
             <td>${escapeHtml(task.title)}</td>
             <td><span class="priority ${priorityClass}">${task.priority}</span></td>
             <td>${task.dueDate || '-'}</td>
+            <td>${checklistCount > 0 ? `${checklistCount} item${checklistCount > 1 ? 's' : ''}` : '-'}</td>
+          </tr>
+        `;
+      } else if (serviceType === 'plannerbasic') {
+        return `
+          <tr>
+            <td class="outline">${index + 1}</td>
+            <td>${escapeHtml(task.title)}</td>
+            <td>${escapeHtml(task.bucket)}</td>
+            <td><span class="priority ${priorityClass}">${task.priority}</span></td>
+            <td>${task.dueDate || '-'}</td>
+            <td>${assignedCount > 0 ? `${assignedCount} person${assignedCount > 1 ? 's' : ''}` : '-'}</td>
             <td>${checklistCount > 0 ? `${checklistCount} item${checklistCount > 1 ? 's' : ''}` : '-'}</td>
           </tr>
         `;
@@ -689,6 +781,9 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
       const hasLists = todoLists && todoLists.length > 0;
       const hasListSelected = selectedListId && selectedListId.length > 0;
       btnStartImport.disabled = hasErrors || !hasLists || !hasListSelected || parsedTasks.length === 0;
+    } else if (serviceType === 'plannerbasic') {
+      const hasSession = importSession && importSession.planId && importSession.token;
+      btnStartImport.disabled = hasErrors || !hasSession || parsedTasks.length === 0;
     } else {
       const hasSession = importSession && importSession.baseUrl;
       btnStartImport.disabled = hasErrors || !hasSession || parsedTasks.length === 0;
@@ -712,6 +807,9 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     if (serviceType === 'todo') {
       // To Do import - simpler flat structure
       await startToDoImport(total, failedItems);
+    } else if (serviceType === 'plannerbasic') {
+      // Planner Basic import - flat structure with buckets via Graph API
+      await startBasicImport(total, failedItems);
     } else {
       // Planner Premium import - with hierarchy
       await startPlannerImport(total, failedItems, taskIdMap);
@@ -796,6 +894,94 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     }
 
     showResults(created, failed, 0, failedItems);
+  }
+
+  // Planner Basic import - flat structure with buckets via Graph API
+  async function startBasicImport(total, failedItems) {
+    let created = 0;
+    let failed = 0;
+
+    for (let i = 0; i < parsedTasks.length; i++) {
+      if (importCancelled) {
+        addLogEntry('Import cancelled by user', 'info');
+        break;
+      }
+
+      const task = parsedTasks[i];
+      progressCurrent.textContent = i + 1;
+      progressFill.style.width = `${((i + 1) / total) * 100}%`;
+
+      try {
+        // Get bucket ID from mapping
+        const bucketId = task.bucket ? bucketMapping[task.bucket] : null;
+
+        // Create task via Graph API
+        const response = await chrome.runtime.sendMessage({
+          action: 'createBasicImportTask',
+          planId: importSession.planId,
+          token: importSession.token,
+          taskData: {
+            title: task.title,
+            bucketId: bucketId,
+            priority: mapBasicPriorityToValue(task.priority),
+            startDateTime: task.startDate || null,
+            dueDateTime: task.dueDate || null,
+            assignedTo: task.assignedTo || []
+          }
+        });
+
+        if (response.success && response.data) {
+          const createdTask = response.data;
+          addLogEntry(`Created: ${task.title}`, 'success');
+
+          // Update task details (description + checklist) if needed
+          if (task.description || task.checklistItems.length > 0) {
+            try {
+              await chrome.runtime.sendMessage({
+                action: 'updateBasicTaskDetails',
+                taskId: createdTask.id,
+                token: importSession.token,
+                details: {
+                  description: task.description || '',
+                  checklistItems: task.checklistItems
+                }
+              });
+              if (task.checklistItems.length > 0) {
+                addLogEntry(`  Added ${task.checklistItems.length} checklist items`, 'info');
+              }
+            } catch (detailErr) {
+              console.warn('[Import] Failed to update task details:', detailErr.message);
+              addLogEntry(`  Warning: Could not set details for ${task.title}`, 'info');
+            }
+          }
+
+          created++;
+        } else {
+          throw new Error(response.error || 'Unknown error');
+        }
+      } catch (error) {
+        console.error('[Import] Error creating basic task:', error);
+        addLogEntry(`Failed: ${task.title} - ${error.message}`, 'error');
+        failedItems.push({ task, error: error.message });
+        failed++;
+      }
+
+      // Small delay to avoid rate limiting
+      if (i < parsedTasks.length - 1) {
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+
+    showResults(created, failed, 0, failedItems);
+  }
+
+  function mapBasicPriorityToValue(priority) {
+    switch (priority) {
+      case 'urgent': return 1;
+      case 'important': return 3;
+      case 'low': return 9;
+      default: return 5; // medium
+    }
   }
 
   // Planner Premium import - with hierarchy
@@ -884,7 +1070,8 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
   function mapPriorityToValue(priority) {
     switch (priority) {
       case 'urgent': return 1;
-      case 'high': return 3;
+      case 'high':
+      case 'important': return 3;
       case 'low': return 9;
       default: return 5;
     }
@@ -907,6 +1094,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
 
     // Update button text based on service type
     btnViewDestination.textContent = serviceType === 'todo' ? 'View in To Do' : 'View in Planner';
+    if (serviceType === 'plannerbasic') btnViewDestination.textContent = 'View in Planner';
 
     if (failedItems.length > 0) {
       failedTasks.classList.remove('hidden');
@@ -957,9 +1145,17 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
   }
 
   function downloadTemplate(type) {
-    const isToDo = type === 'todo';
-    const template = isToDo ? CSV_TEMPLATE_TODO : CSV_TEMPLATE_PLANNER;
-    const filename = isToDo ? 'todo-import-template.csv' : 'planner-import-template.csv';
+    let template, filename;
+    if (type === 'todo') {
+      template = CSV_TEMPLATE_TODO;
+      filename = 'todo-import-template.csv';
+    } else if (type === 'plannerbasic') {
+      template = CSV_TEMPLATE_BASIC;
+      filename = 'planner-basic-import-template.csv';
+    } else {
+      template = CSV_TEMPLATE_PLANNER;
+      filename = 'planner-import-template.csv';
+    }
 
     const blob = new Blob([template], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
