@@ -613,6 +613,7 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
           <span class="mapping-arrow">→</span>
           <select class="mapping-select" data-csv-bucket="${escapeHtml(csvBucket)}">
             <option value="">-- Skip (no bucket) --</option>
+            <option value="__create_new__">+ Create "${escapeHtml(csvBucket)}"</option>
             ${existingBuckets.map(b => `
               <option value="${b.id}" ${b.id === matchId ? 'selected' : ''}>${escapeHtml(b.name)}</option>
             `).join('')}
@@ -901,6 +902,44 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     let created = 0;
     let failed = 0;
 
+    // First, create any new buckets that are needed
+    const bucketsToCreate = [];
+    for (const [csvBucket, mappingValue] of Object.entries(bucketMapping)) {
+      if (mappingValue === '__create_new__') {
+        bucketsToCreate.push(csvBucket);
+      }
+    }
+
+    if (bucketsToCreate.length > 0) {
+      addLogEntry(`Creating ${bucketsToCreate.length} new bucket(s)...`, 'info');
+
+      for (const bucketName of bucketsToCreate) {
+        try {
+          const response = await chrome.runtime.sendMessage({
+            action: 'createBasicBucket',
+            planId: importSession.planId,
+            token: importSession.token,
+            bucketName: bucketName
+          });
+
+          if (response.success && response.data) {
+            // Update the bucket mapping with the new bucket ID
+            bucketMapping[bucketName] = response.data.id;
+            // Also add to existingBuckets for reference
+            existingBuckets.push({ id: response.data.id, name: response.data.name });
+            addLogEntry(`Created bucket: ${bucketName}`, 'success');
+          } else {
+            throw new Error(response.error || 'Failed to create bucket');
+          }
+        } catch (error) {
+          console.error('[Import] Error creating bucket:', error);
+          addLogEntry(`Failed to create bucket "${bucketName}": ${error.message}`, 'error');
+          // Set mapping to null so tasks go without bucket
+          bucketMapping[bucketName] = null;
+        }
+      }
+    }
+
     for (let i = 0; i < parsedTasks.length; i++) {
       if (importCancelled) {
         addLogEntry('Import cancelled by user', 'info');
@@ -989,6 +1028,44 @@ Exercise routine,Normal,,Daily workout,Warm up;Cardio;Strength training;Cool dow
     let created = 0;
     let failed = 0;
     let skipped = 0;
+
+    // First, create any new buckets that are needed
+    const bucketsToCreate = [];
+    for (const [csvBucket, mappingValue] of Object.entries(bucketMapping)) {
+      if (mappingValue === '__create_new__') {
+        bucketsToCreate.push(csvBucket);
+      }
+    }
+
+    if (bucketsToCreate.length > 0) {
+      addLogEntry(`Creating ${bucketsToCreate.length} new bucket(s)...`, 'info');
+
+      for (const bucketName of bucketsToCreate) {
+        try {
+          const response = await chrome.runtime.sendMessage({
+            action: 'createImportBucket',
+            bucketName: bucketName,
+            baseUrl: importSession.baseUrl,
+            token: importSession.token
+          });
+
+          if (response.success && response.data) {
+            // Update the bucket mapping with the new bucket ID
+            bucketMapping[bucketName] = response.data.id;
+            // Also add to existingBuckets for reference
+            existingBuckets.push({ id: response.data.id, name: response.data.name });
+            addLogEntry(`Created bucket: ${bucketName}`, 'success');
+          } else {
+            throw new Error(response.error || 'Failed to create bucket');
+          }
+        } catch (error) {
+          console.error('[Import] Error creating bucket:', error);
+          addLogEntry(`Failed to create bucket "${bucketName}": ${error.message}`, 'error');
+          // Set mapping to null so tasks go without bucket
+          bucketMapping[bucketName] = null;
+        }
+      }
+    }
 
     for (let i = 0; i < parsedTasks.length; i++) {
       if (importCancelled) {

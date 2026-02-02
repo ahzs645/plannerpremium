@@ -1662,6 +1662,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // Create a bucket in Planner Basic via Graph API
+  if (request.action === 'createBasicBucket') {
+    const { planId, token, bucketName } = request;
+
+    (async () => {
+      try {
+        const payload = {
+          name: bucketName,
+          planId: planId,
+          orderHint: ' !' // Place at end
+        };
+
+        const response = await graphFetch(`/planner/buckets`, token, {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw new Error(`Failed to create bucket: ${response.status} ${errorText}`);
+        }
+
+        const createdBucket = await response.json();
+        console.log('[Background] Created bucket:', createdBucket.name, createdBucket.id);
+        sendResponse({ success: true, data: createdBucket });
+      } catch (error) {
+        console.error('[Background] createBasicBucket error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
   // Create a task in Planner Basic via Graph API
   if (request.action === 'createBasicImportTask') {
     const { planId, token, taskData } = request;
@@ -1837,6 +1870,40 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
       } catch (error) {
         console.error('[Background] getImportSession error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Create a bucket for import (PSS API for Premium plans)
+  if (request.action === 'createImportBucket') {
+    const { bucketName, baseUrl, token } = request;
+
+    (async () => {
+      try {
+        const response = await fetch(`${baseUrl}/buckets`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            name: bucketName
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to create bucket: ${response.status} - ${errorText}`);
+        }
+
+        const createdBucket = await response.json();
+        console.log('[Background] Created bucket (PSS):', createdBucket.name, createdBucket.id);
+        sendResponse({ success: true, data: createdBucket });
+      } catch (error) {
+        console.error('[Background] createImportBucket error:', error);
         sendResponse({ success: false, error: error.message });
       }
     })();
